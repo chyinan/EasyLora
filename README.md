@@ -66,8 +66,6 @@ npm run test:e2e
 ### 常见问题
 - Q: 首次启动很慢？
   - A: 需要下载或首次加载权重，且数据会预处理到 `workspace/processed/`。
-- Q: 大文件是否应该入库？
-  - A: 已在 `.gitignore` 排除模型、输出与数据集工件。如需版本化大文件，建议使用 Git LFS。
 
 ### Git LFS（可选）
 若你希望跟踪权重文件，可安装并启用 Git LFS：
@@ -78,5 +76,10 @@ git add .gitattributes
 ```
 
 ### 许可证
-未明确指定许可证的情况下，默认仅用于学习与内部测试，发布前请补充 LICENSE。
+本项目采用 PolyForm Noncommercial License 1.0.0：
+
+- 非商业用途：免费使用、修改与再发布
+- 商业用途：需取得作者书面授权
+
+完整条款参见 `LICENSE` 文件。
 
