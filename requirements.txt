@@ -1,0 +1,16 @@
+PyQt5==5.15.10
+Pillow==10.4.0
+torch>=2.2.0
+torchvision>=0.17.0
+diffusers>=0.30.0
+transformers>=4.42.0
+accelerate>=0.30.0
+peft>=0.11.1
+safetensors>=0.4.2
+tqdm>=4.66.4
+fastapi>=0.111.0
+uvicorn>=0.30.0
+python-multipart>=0.0.20
+opencv-python-headless>=4.12.0.88
+psutil>=5.9.8
+py-cpuinfo>=9.0.0
