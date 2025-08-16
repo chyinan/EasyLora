@@ -1,4 +1,4 @@
-EasyLora
+# EasyLora
 
 一个开箱即用的 LoRA 训练与标注小工具：后端基于 FastAPI，前端基于 React + Vite。支持图片上传、数据预处理、标签编辑与一键启动训练，并在训练完成后可将 LoRA 自动复制到本地 SD WebUI 的 `models/Lora` 目录。
 
