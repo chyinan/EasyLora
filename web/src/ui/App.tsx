@@ -322,7 +322,7 @@ function ProcessedImagesPanel() {
 function LogsPanel() {
   const { logs } = useUI()
   return (
-    <div className="card p-4 mt-4 min-h-56 max-h-72 overflow-auto text-sm whitespace-pre-wrap break-all w-full max-w-full overflow-x-hidden">{logs.join('\n')}</div>
+    <div className="card p-4 mt-4 h-full overflow-auto text-sm whitespace-pre-wrap break-all w-full max-w-full overflow-x-hidden">{logs.join('\n')}</div>
   )
 }
 
@@ -527,7 +527,9 @@ export default function App() {
         </div>
         <div className="lg:col-span-5 flex flex-col w-full">
           <ParamsPanel />
-          <LogsPanel />
+          <div className="flex-1">
+            <LogsPanel />
+          </div>
         </div>
       </div>
       <div className="h-12 flex items-center justify-between text-sm text-gray-600 px-6">
