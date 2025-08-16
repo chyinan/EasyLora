@@ -27,3 +27,108 @@ body {
   @apply bg-white rounded-xl shadow-soft;
 }
 
+/* 减少底部状态栏与内容区域的间距 */
+.min-h-screen {
+  min-height: calc(100vh - 1rem); /* 减少底部间距 */
+}
+
+/* 调整主内容区域的底部间距 */
+.container {
+  padding-bottom: 0.5rem; /* 减少底部padding */
+}
+
+/* 自定义滑动条样式 - 蓝紫色渐变 */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  height: 8px;
+  border-radius: 4px;
+}
+
+/* 滑动条轨道 */
+input[type="range"]::-webkit-slider-track {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 8px;
+  border-radius: 4px;
+  background: #e5e7eb;
+}
+
+input[type="range"]::-moz-range-track {
+  height: 8px;
+  border-radius: 4px;
+  background: #e5e7eb;
+  border: none;
+}
+
+/* 滑动条填充部分 - 蓝紫色渐变 */
+input[type="range"]::-webkit-slider-runnable-track {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #6a5af9 0%, #a66cff 100%);
+  background-size: var(--range-progress, 0%) 100%;
+  background-repeat: no-repeat;
+}
+
+input[type="range"]::-moz-range-progress {
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #6a5af9 0%, #a66cff 100%);
+}
+
+/* 滑动条滑块 */
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 20px;
+  width: 20px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6a5af9 0%, #a66cff 100%);
+  border: 2px solid white;
+  box-shadow: 0 2px 8px rgba(106, 90, 249, 0.3);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-top: -6px; /* 垂直居中对齐：轨道高度8px，滑块高度20px，需要向上偏移(20-8)/2=6px */
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+  box-shadow: 0 4px 12px rgba(106, 90, 249, 0.4);
+}
+
+input[type="range"]::-moz-range-thumb {
+  height: 20px;
+  width: 20px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6a5af9 0%, #a66cff 100%);
+  border: 2px solid white;
+  box-shadow: 0 2px 8px rgba(106, 90, 249, 0.3);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-top: -6px; /* 垂直居中对齐 */
+}
+
+input[type="range"]::-moz-range-thumb:hover {
+  transform: scale(1.1);
+  box-shadow: 0 4px 12px rgba(106, 90, 249, 0.4);
+}
+
+/* 移除默认的焦点样式 */
+input[type="range"]:focus {
+  outline: none;
+}
+
+/* 为不同浏览器设置填充进度 */
+input[type="range"] {
+  --range-progress: 0%;
+}
+
+/* 动态更新填充进度 */
+input[type="range"]::-webkit-slider-runnable-track {
+  background-size: var(--range-progress) 100%;
+}
+

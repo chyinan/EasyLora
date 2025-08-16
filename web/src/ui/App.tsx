@@ -8,7 +8,9 @@ import { ErrorBoundary } from './ErrorBoundary'
 function SettingsButton() {
   const { settingsOpen, set } = useUI()
   return (
-    <button className="p-2 rounded-lg hover:bg-gray-100" title="设置" onClick={() => set({ settingsOpen: true })}>⚙️</button>
+    <button className="p-2 rounded-lg hover:bg-gray-100" title="设置" onClick={() => set({ settingsOpen: true })}>
+      <img src="/settings.png" alt="设置" className="w-5 h-5" />
+    </button>
   )
 }
 
@@ -19,10 +21,12 @@ function TopBar() {
         <img src="/logo.png" className="w-8 h-8 rounded-lg" alt="logo" />
         <div className="font-extrabold text-2xl">EasyLora</div>
       </div>
-      <div className="flex items-center gap-2">
-        <button className="p-2 rounded-lg hover:bg-gray-100" title="帮助">?</button>
-        <SettingsButton />
-      </div>
+             <div className="flex items-center gap-2">
+         <button className="p-2 rounded-lg hover:bg-gray-100" title="帮助">
+           <img src="/help.png" alt="帮助" className="w-5 h-5" />
+         </button>
+         <SettingsButton />
+       </div>
     </div>
   )
 }
@@ -135,7 +139,15 @@ function ParamsPanel() {
             set({ learningRate: Number(e.target.value) })
             showSaveTip()
           }}
+          onInput={(e) => {
+            const target = e.target as HTMLInputElement
+            const progress = ((Number(target.value) - Number(target.min)) / (Number(target.max) - Number(target.min))) * 100
+            target.style.setProperty('--range-progress', `${progress}%`)
+          }}
           className="w-full"
+          style={{
+            '--range-progress': `${((learningRate - 1) / (10 - 1)) * 100}%`
+          } as React.CSSProperties}
         />
       </div>
 
@@ -151,7 +163,15 @@ function ParamsPanel() {
             set({ trainSteps: Number(e.target.value) })
             showSaveTip()
           }}
+          onInput={(e) => {
+            const target = e.target as HTMLInputElement
+            const progress = ((Number(target.value) - Number(target.min)) / (Number(target.max) - Number(target.min))) * 100
+            target.style.setProperty('--range-progress', `${progress}%`)
+          }}
           className="w-full"
+          style={{
+            '--range-progress': `${((trainSteps - 500) / (4000 - 500)) * 100}%`
+          } as React.CSSProperties}
         />
       </div>
 
@@ -182,14 +202,12 @@ function ParamsPanel() {
               className={
                 `inline-flex items-center justify-center w-8 h-8 rounded-lg border-2 transition ` +
                 (autoResume
-                  ? 'bg-gradient-to-r from-brandStart to-brandEnd border-transparent shadow-soft'
+                  ? 'border-transparent shadow-soft'
                   : 'border-gray-300 bg-white hover:border-brandEnd')
               }
             >
               {autoResume && (
-                <svg viewBox="0 0 24 24" className="w-5 h-5 text-white">
-                  <path fill="currentColor" d="M20.285 6.709a1 1 0 0 1 0 1.414l-9.19 9.19a1 1 0 0 1-1.414 0L3.715 11.55a1 1 0 1 1 1.414-1.415l4.028 4.03 8.483-8.484a1 1 0 0 1 1.645.028z"/>
-                </svg>
+                <img src="/yes.png" alt="✓"/>
               )}
             </span>
             <span className="text-base font-medium">断点续训</span>
@@ -322,7 +340,7 @@ function ProcessedImagesPanel() {
 function LogsPanel() {
   const { logs } = useUI()
   return (
-    <div className="card p-4 mt-4 h-full overflow-auto text-sm whitespace-pre-wrap break-all w-full max-w-full overflow-x-hidden">{logs.join('\n')}</div>
+    <div className="card p-4 mt-4 min-h-56 max-h-52 overflow-auto text-sm whitespace-pre-wrap break-all w-full max-w-full overflow-x-hidden">{logs.join('\n')}</div>
   )
 }
 
@@ -520,7 +538,7 @@ export default function App() {
           </div>
         </div>
       )}
-      <div className="container mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
+      <div className="container mx-auto px-6 pt-6 pb-2 grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
         <div className="lg:col-span-7 flex flex-col">
           <UploadArea />
           <ProcessedImagesPanel />
