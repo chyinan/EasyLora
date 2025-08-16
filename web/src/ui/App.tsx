@@ -322,7 +322,7 @@ function ProcessedImagesPanel() {
 function LogsPanel() {
   const { logs } = useUI()
   return (
-    <div className="card p-4 mt-4 min-h-56 max-h-72 overflow-auto text-sm whitespace-pre-wrap">{logs.join('\n')}</div>
+    <div className="card p-4 mt-4 min-h-56 max-h-72 overflow-auto text-sm whitespace-pre-wrap break-all w-full max-w-full overflow-x-hidden">{logs.join('\n')}</div>
   )
 }
 
@@ -525,7 +525,7 @@ export default function App() {
           <UploadArea />
           <ProcessedImagesPanel />
         </div>
-        <div className="lg:col-span-5 flex flex-col">
+        <div className="lg:col-span-5 flex flex-col w-full">
           <ParamsPanel />
           <LogsPanel />
         </div>

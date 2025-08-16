@@ -3,7 +3,7 @@ import { useUI } from '../store'
 
 interface Props { onClose: () => void }
 
-type InputRowProps = React.InputHTMLAttributes<HTMLInputElement> & {
+type InputRowProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, 'form'> & {
   label: string
   field: string
   form: Record<string, any>
