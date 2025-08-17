@@ -105,20 +105,22 @@ async def get_processed_images():
             return {"images": []}
         
         images = []
-        for img_file in sorted(dataset_dir.glob("*.png")):
-            txt_file = img_file.with_suffix(".txt")
-            caption = ""
-            if txt_file.exists():
-                try:
-                    caption = txt_file.read_text(encoding="utf-8").strip()
-                except:
-                    pass
-            
-            images.append({
-                "filename": img_file.name,
-                "path": f"/workspace/processed/dataset/{img_file.name}",
-                "caption": caption
-            })
+        # 支持多种图片格式
+        for ext in ["*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp"]:
+            for img_file in sorted(dataset_dir.glob(ext)):
+                txt_file = img_file.with_suffix(".txt")
+                caption = ""
+                if txt_file.exists():
+                    try:
+                        caption = txt_file.read_text(encoding="utf-8").strip()
+                    except:
+                        pass
+                
+                images.append({
+                    "filename": img_file.name,
+                    "path": f"/workspace/processed/dataset/{img_file.name}",
+                    "caption": caption
+                })
         
         return {"images": images}
     except Exception as e:
@@ -216,16 +218,14 @@ async def system_stats():
 
 @app.post("/api/update-caption")
 async def update_caption(payload: dict):
-    """更新图片的标签"""
+    """更新图片的标签并移动图片到处理目录"""
     try:
         filename = payload.get("filename")
         caption = payload.get("caption", "")
+        is_processed = payload.get("isProcessed", False)
         
         if not filename:
             return JSONResponse(status_code=400, content={"ok": False, "error": "缺少文件名"})
-        
-        dataset_dir = Path("workspace/processed/dataset")
-        txt_file = dataset_dir / f"{Path(filename).stem}.txt"
         
         # 确保标签以模型名称开头
         settings = get_settings()
@@ -238,9 +238,75 @@ async def update_caption(payload: dict):
         else:
             caption = model_prefix
         
-        txt_file.write_text(caption, encoding="utf-8")
+        if is_processed:
+            # 对于已处理的图片，直接更新标签文件，不移动文件
+            dataset_dir = Path("workspace/processed/dataset")
+            img_file = dataset_dir / filename
+            
+            if not img_file.exists():
+                return JSONResponse(status_code=404, content={"ok": False, "error": f"已处理的图片 {filename} 不存在"})
+            
+            # 保存标签文件
+            txt_file = img_file.with_suffix(".txt")
+            txt_file.write_text(caption, encoding="utf-8")
+            
+            return {"ok": True, "caption": caption, "message": f"已处理图片的标签已更新"}
+        else:
+            # 对于新上传的图片，移动文件并保存标签
+            # 源文件路径（原始上传目录）
+            raw_dir = Path("workspace/raw_uploads")
+            source_file = raw_dir / filename
+            
+            # 目标目录（处理后的数据集目录）
+            dataset_dir = Path("workspace/processed/dataset")
+            dataset_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 目标文件路径
+            target_file = dataset_dir / filename
+            
+            # 检查源文件是否存在
+            if not source_file.exists():
+                return JSONResponse(status_code=404, content={"ok": False, "error": f"源文件 {filename} 不存在"})
+            
+            # 移动图片文件到处理目录
+            import shutil
+            shutil.move(str(source_file), str(target_file))
+            
+            # 保存标签文件
+            txt_file = target_file.with_suffix(".txt")
+            txt_file.write_text(caption, encoding="utf-8")
+            
+            return {"ok": True, "caption": caption, "message": f"图片已移动到处理目录并保存标签"}
+            
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.delete("/api/delete-image")
+async def delete_image(payload: dict):
+    """删除图片及其对应的标签文件"""
+    try:
+        filename = payload.get("filename")
         
-        return {"ok": True, "caption": caption}
+        if not filename:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "缺少文件名"})
+        
+        dataset_dir = Path("workspace/processed/dataset")
+        img_file = dataset_dir / filename
+        
+        # 检查文件是否存在
+        if not img_file.exists():
+            return JSONResponse(status_code=404, content={"ok": False, "error": "文件不存在"})
+        
+        # 删除图片文件
+        img_file.unlink()
+        
+        # 删除对应的标签文件（如果存在）
+        txt_file = img_file.with_suffix(".txt")
+        if txt_file.exists():
+            txt_file.unlink()
+        
+        return {"ok": True, "message": f"已删除 {filename}"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 

@@ -95,6 +95,24 @@ def apply_offline_augmentations(im: Image.Image) -> Image.Image:
     return img
 
 
+def get_next_image_index(dataset_folder: Path) -> int:
+    """获取下一个图片序号，基于现有图片文件"""
+    existing_images = []
+    for img_file in dataset_folder.glob("img_*.png"):
+        try:
+            # 提取序号，例如 img_0031.png -> 31
+            name = img_file.stem
+            if name.startswith("img_"):
+                index_str = name[4:]  # 去掉 "img_" 前缀
+                if index_str.isdigit():
+                    existing_images.append(int(index_str))
+        except:
+            continue
+    
+    # 返回下一个序号，如果没有现有图片则从0开始
+    return max(existing_images) + 1 if existing_images else 0
+
+
 def process_and_save(
     image_paths: List[Path],
     target_size: int,
@@ -116,8 +134,11 @@ def process_and_save(
     dataset_folder = processed_dir / "dataset"
     dataset_folder.mkdir(exist_ok=True)
 
+    # 获取下一个图片序号
+    next_index = get_next_image_index(dataset_folder)
+
     saved: List[Path] = []
-    for idx, img_path in enumerate(image_paths):
+    for i, img_path in enumerate(image_paths):
         try:
             with Image.open(img_path) as im:
                 im = im.convert("RGB")
@@ -127,21 +148,22 @@ def process_and_save(
         base = pad_to_square(im)
         base = base.resize((target_size, target_size), Image.BICUBIC)
 
-        # 原图版本
-        out_name = f"img_{idx:04d}.png"
+        # 原图版本 - 使用连续的序号
+        current_index = next_index + i
+        out_name = f"img_{current_index:04d}.png"
         out_path = dataset_folder / out_name
         base.save(out_path)
         saved.append(out_path)
-        _write_caption(out_path, captions_dir, captions_keyword)
+        _write_caption(out_path, dataset_folder, captions_keyword)
 
         # 增强版本
         for k in range(max(0, augment_factor - 1)):
             aug = apply_offline_augmentations(base)
-            out_name_aug = f"img_{idx:04d}_aug{k+1}.png"
+            out_name_aug = f"img_{current_index:04d}_aug{k+1}.png"
             out_path_aug = dataset_folder / out_name_aug
             aug.save(out_path_aug)
             saved.append(out_path_aug)
-            _write_caption(out_path_aug, captions_dir, captions_keyword)
+            _write_caption(out_path_aug, dataset_folder, captions_keyword)
 
     return processed_dir, captions_dir, saved
 
@@ -156,6 +178,7 @@ def _write_caption(image_path: Path, captions_dir: Path, keyword: str | None) ->
         words = [w for w in stem.split() if w]
         text = ", ".join(words) if words else "person, style"
 
-    caption_path = captions_dir / f"{image_path.stem}.txt"
+    # 使用图片文件名（img_****格式）来创建标签文件
+    caption_path = image_path.with_suffix('.txt')
     caption_path.write_text(text, encoding="utf-8")
 

@@ -36,28 +36,39 @@ TagButton.displayName = 'TagButton'
 
 interface CaptionEditorProps {
   image: {
-    filename: string
-    path: string
-    caption: string
+    id?: string
+    file?: File
+    previewUrl?: string
+    caption?: string
+    filename?: string
+    path?: string
   }
   onClose: () => void
   onSave: (filename: string, caption: string) => void
 }
 
 export default function CaptionEditor({ image, onClose, onSave }: CaptionEditorProps) {
-  const [caption, setCaption] = useState(image.caption)
+  const [caption, setCaption] = useState(image.caption || '')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    setCaption(image.caption)
+    setCaption(image.caption || '')
   }, [image.caption])
 
   const handleSave = async () => {
     setSaving(true)
     try {
-      await onSave(image.filename, caption)
+      const filename = image.file?.name || image.filename || 'unknown'
+      console.log('CaptionEditor保存:', { 
+        imageFile: image.file?.name, 
+        imageFilename: image.filename, 
+        finalFilename: filename,
+        caption 
+      })
+      await onSave(filename, caption)
       onClose()
     } catch (error) {
+      console.error('CaptionEditor保存失败:', error)
       alert('保存失败: ' + error)
     } finally {
       setSaving(false)
@@ -121,11 +132,11 @@ export default function CaptionEditor({ image, onClose, onSave }: CaptionEditorP
           <div className="space-y-4">
             <div className="text-sm text-gray-600">图片预览</div>
             <img 
-              src={`http://127.0.0.1:8000${image.path}`} 
-              alt={image.filename}
+              src={image.previewUrl || `http://127.0.0.1:8000${image.path}`} 
+              alt={image.file?.name || image.filename || '图片'}
               className="w-full max-w-md rounded-lg border shadow-sm"
             />
-            <div className="text-sm text-gray-500">{image.filename}</div>
+            <div className="text-sm text-gray-500">{image.file?.name || image.filename || '未知文件'}</div>
           </div>
 
           {/* 标签编辑 */}

@@ -1,5 +1,8 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { validateImageForTraining, cleanupPreviewUrl } from './utils/imageUtils'
+import { checkExistingCaptions, syncCaptionsToLocal } from './utils/captionSync'
+import { SortOption, sortImages } from './ui/SortOptions'
 
 export type BaseModel = 'SD1.5' | 'SD2.1' | 'SDXL'
 
@@ -7,6 +10,8 @@ export interface DatasetItem {
   id: string
   file: File
   previewUrl: string
+  caption?: string
+  isProcessed?: boolean
 }
 
 interface UIState {
@@ -24,6 +29,7 @@ interface UIState {
   dataset: DatasetItem[]
   settingsOpen: boolean
   settings: any | null
+  sortOption: SortOption
 
   set: (partial: Partial<UIState>) => void
   addLog: (line: string) => void
@@ -32,6 +38,12 @@ interface UIState {
   clearDataset: () => void
   resetProgress: () => void
   setSettings: (s: any) => void
+  cleanupPreviewUrls: () => void
+  updateItemCaption: (id: string, caption: string) => void
+  markItemAsProcessed: (id: string) => void
+  syncExistingCaptions: () => void
+  reorderDataset: (newOrder: DatasetItem[]) => void
+  setSortOption: (option: SortOption) => void
 }
 
 export const useUI = create<UIState>()(
@@ -48,35 +60,175 @@ export const useUI = create<UIState>()(
       eta: '--:--',
       stepText: '闲置',
       logs: [],
-      dataset: [],
-      settingsOpen: false,
-      settings: null,
+             dataset: [],
+       settingsOpen: false,
+       settings: null,
+       sortOption: 'custom',
 
       set: (partial) => set(partial),
       addLog: (line) => set({ logs: [...get().logs, line].slice(-500) }),
-      addFiles: (files) => {
-        const items = files.map((f) => ({
-          id: `${f.name}-${Math.random().toString(36).slice(2)}`,
-          file: f,
-          previewUrl: URL.createObjectURL(f),
-        }))
+      addFiles: async (files) => {
+        const items = []
+        const warnings: string[] = []
+        
+        for (const file of files) {
+          const validation = await validateImageForTraining(file)
+          if (!validation.valid) {
+            warnings.push(`${file.name}: ${validation.warning}`)
+            continue
+          }
+          if (validation.warning) {
+            warnings.push(`${file.name}: ${validation.warning}`)
+          }
+          
+          // 先上传文件到后端
+          try {
+            const formData = new FormData()
+            formData.append('files', file)
+            
+            const response = await fetch('/api/upload', {
+              method: 'POST',
+              body: formData
+            })
+            
+            if (!response.ok) {
+              throw new Error(`上传失败: ${response.status}`)
+            }
+            
+            const result = await response.json()
+            if (!result.ok) {
+              throw new Error(`上传失败: ${result.error || '未知错误'}`)
+            }
+            
+            console.log(`文件 ${file.name} 上传成功`)
+            
+          } catch (error) {
+            console.error(`文件 ${file.name} 上传失败:`, error)
+            warnings.push(`${file.name}: 上传失败 - ${error}`)
+            continue
+          }
+          
+          items.push({
+            id: `${file.name}-${Math.random().toString(36).slice(2)}`,
+            file: file,
+            previewUrl: URL.createObjectURL(file),
+          })
+        }
+        
+        if (warnings.length > 0) {
+          console.warn('图片验证警告:', warnings)
+        }
+        
         set({ dataset: [...get().dataset, ...items] })
       },
-      removeItem: (id) => set({ dataset: get().dataset.filter((d) => d.id !== id) }),
-      clearDataset: () => set({ dataset: [] }),
+      removeItem: (id) => {
+        const item = get().dataset.find(d => d.id === id)
+        if (item) {
+          cleanupPreviewUrl(item.previewUrl)
+          
+          // 立即从UI中移除，提升响应速度
+          set({ dataset: get().dataset.filter((d) => d.id !== id) })
+          
+          // 如果是已处理的图片，在后台异步删除文件
+          if (item.isProcessed) {
+            const filename = item.file ? item.file.name : item.filename
+            if (filename) {
+              // 使用setTimeout让删除操作不阻塞UI
+              setTimeout(() => {
+                fetch('/api/delete-image', {
+                  method: 'DELETE',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ filename })
+                }).catch(error => {
+                  console.error('删除图片文件失败:', error)
+                  // 如果删除失败，可以考虑重新添加到UI中
+                })
+              }, 0)
+            }
+          }
+        }
+      },
+      clearDataset: () => {
+        // 清理所有预览URL
+        get().dataset.forEach(item => {
+          cleanupPreviewUrl(item.previewUrl)
+        })
+        set({ dataset: [] })
+      },
       resetProgress: () => set({ progress: 0, eta: '--:--', stepText: '闲置' }),
       setSettings: (s) => set({ settings: s }),
+      cleanupPreviewUrls: () => {
+        // 清理所有预览URL的辅助方法
+        get().dataset.forEach(item => {
+          cleanupPreviewUrl(item.previewUrl)
+        })
+      },
+      updateItemCaption: (id: string, caption: string) => {
+        set({
+          dataset: get().dataset.map(item => 
+            item.id === id ? { ...item, caption } : item
+          )
+        })
+      },
+      markItemAsProcessed: (id: string) => {
+        set({
+          dataset: get().dataset.map(item => 
+            item.id === id ? { 
+              ...item, 
+              isProcessed: true,
+              // 为已处理的图片添加必要的属性，确保能正确显示
+              filename: item.file ? item.file.name : item.filename,
+              path: `/workspace/processed/dataset/${item.file ? item.file.name : item.filename}`
+            } : item
+          )
+        })
+      },
+      syncExistingCaptions: async () => {
+        try {
+          const existingImages = await checkExistingCaptions()
+          const currentDataset = get().dataset
+          
+          // 同步已存在的标签到本地状态
+          for (const existingImage of existingImages) {
+            const existingItem = currentDataset.find(item => 
+              item.file && item.file.name === existingImage.filename
+            )
+            
+            if (existingItem) {
+              // 更新已存在的项目
+              set({
+                dataset: currentDataset.map(item => 
+                  item.id === existingItem.id 
+                    ? { ...item, caption: existingImage.caption, isProcessed: true }
+                    : item
+                )
+              })
+            }
+          }
+                 } catch (error) {
+           console.error('同步已存在标签失败:', error)
+         }
+       },
+       reorderDataset: (newOrder: DatasetItem[]) => {
+         set({ dataset: newOrder })
+       },
+       setSortOption: (option: SortOption) => {
+         const currentDataset = get().dataset
+         const sortedDataset = sortImages(currentDataset, option)
+         set({ dataset: sortedDataset, sortOption: option })
+       },
     }),
     {
       name: 'easylora-settings', // 本地存储的key名称
       partialize: (state) => ({
         // 只保存用户设置，不保存临时状态
-        modelName: state.modelName,
-        baseModel: state.baseModel,
-        learningRate: state.learningRate,
-        trainSteps: state.trainSteps,
-        saveEverySteps: state.saveEverySteps,
-        autoResume: state.autoResume,
+                 modelName: state.modelName,
+         baseModel: state.baseModel,
+         learningRate: state.learningRate,
+         trainSteps: state.trainSteps,
+         saveEverySteps: state.saveEverySteps,
+         autoResume: state.autoResume,
+         sortOption: state.sortOption,
       }),
     }
   )

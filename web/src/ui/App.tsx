@@ -4,6 +4,76 @@ import { useUI } from '../store'
 import Settings from './Settings'
 import CaptionEditor from './CaptionEditor'
 import { ErrorBoundary } from './ErrorBoundary'
+import DraggableImageGrid from './DraggableImageGrid'
+import SortOptions, { SortOption } from './SortOptions'
+
+// 优化的图片预览组件
+function OptimizedImagePreview({ src, alt, className, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) {
+  const [isLoaded, setIsLoaded] = useState(false)
+  const [error, setError] = useState(false)
+  const imgRef = useRef<HTMLImageElement>(null)
+
+  useEffect(() => {
+    const img = imgRef.current
+    if (!img) return
+
+    // 重置状态
+    setIsLoaded(false)
+    setError(false)
+
+    const handleLoad = () => {
+      setIsLoaded(true)
+      setError(false)
+    }
+    const handleError = () => {
+      setError(true)
+      setIsLoaded(false)
+    }
+
+    img.addEventListener('load', handleLoad)
+    img.addEventListener('error', handleError)
+
+    // 如果图片已经加载完成，立即设置状态
+    if (img.complete) {
+      if (img.naturalWidth > 0) {
+        handleLoad()
+      } else {
+        handleError()
+      }
+    }
+
+    return () => {
+      img.removeEventListener('load', handleLoad)
+      img.removeEventListener('error', handleError)
+    }
+  }, [src]) // 添加src作为依赖，当src改变时重新设置监听器
+
+  if (error) {
+    return (
+      <div className={`${className} bg-gray-100 flex items-center justify-center text-gray-400 text-xs`}>
+        加载失败
+      </div>
+    )
+  }
+
+  return (
+    <div className={`${className} relative overflow-hidden bg-gray-50`}>
+      <img
+        ref={imgRef}
+        src={src}
+        alt={alt}
+        className={`w-full h-full object-cover ${isLoaded ? 'opacity-100' : 'opacity-90'}`}
+        style={{ transition: 'opacity 0.2s ease-in-out' }}
+        {...props}
+      />
+      {!isLoaded && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin"></div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function SettingsButton() {
   const { settingsOpen, set } = useUI()
@@ -31,13 +101,115 @@ function TopBar() {
   )
 }
 
+// 优化的上传区域组件
 function UploadArea() {
-  const { dataset, addFiles, removeItem, clearDataset } = useUI()
-  const onDrop = useCallback((accepted: File[]) => addFiles(accepted), [addFiles])
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, accept: { 'image/*': [] } })
+  const { dataset, addFiles, removeItem, clearDataset, updateItemCaption, markItemAsProcessed, syncExistingCaptions, reorderDataset, sortOption, setSortOption } = useUI()
+  const [selectedImage, setSelectedImage] = useState<any>(null)
+  const [showSuccessTip, setShowSuccessTip] = useState(false)
+  
+  // 组件加载时同步已存在的标签
+  useEffect(() => {
+    syncExistingCaptions()
+  }, [syncExistingCaptions])
+
+  // 组件卸载时清理预览URL
+  useEffect(() => {
+    return () => {
+      // 组件卸载时不需要清理，因为store中的清理逻辑已经处理了
+    }
+  }, [])
+
+  const onDrop = useCallback(async (accepted: File[]) => {
+    // 文件大小和类型验证
+    const validFiles = accepted.filter(file => {
+      // 检查文件类型
+      if (!file.type.startsWith('image/')) {
+        console.warn(`跳过非图片文件: ${file.name}`)
+        return false
+      }
+      
+      // 检查文件大小 (限制为50MB)
+      const maxSize = 50 * 1024 * 1024 // 50MB
+      if (file.size > maxSize) {
+        console.warn(`文件过大，跳过: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`)
+        return false
+      }
+      
+      return true
+    })
+    
+    if (validFiles.length !== accepted.length) {
+      alert(`已跳过 ${accepted.length - validFiles.length} 个无效文件`)
+    }
+    
+    await addFiles(validFiles)
+    
+    // 添加文件后同步已存在的标签
+    setTimeout(() => {
+      syncExistingCaptions()
+    }, 100)
+  }, [addFiles, syncExistingCaptions])
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
+    onDrop, 
+    accept: { 'image/*': [] },
+    maxSize: 50 * 1024 * 1024, // 50MB
+    multiple: true
+  })
+
+  const handleImageClick = (image: any) => {
+    setSelectedImage(image)
+  }
+
+  const handleReorder = (newOrder: any[]) => {
+    reorderDataset(newOrder)
+  }
+
+  const handleSortChange = (option: SortOption) => {
+    setSortOption(option)
+  }
+
+  const handleResetOrder = () => {
+    setSortOption('custom')
+  }
+
+  const handleSaveCaption = async (filename: string, caption: string) => {
+    try {
+      const res = await fetch('/api/update-caption', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename, caption })
+      })
+      
+      if (res.ok) {
+        // 如果是新上传的图片，更新本地状态
+        if (selectedImage.id) {
+          updateItemCaption(selectedImage.id, caption)
+          markItemAsProcessed(selectedImage.id)
+        }
+        
+        // 保存成功后关闭编辑器
+        setSelectedImage(null)
+        // 显示成功提示
+        setShowSuccessTip(true)
+        setTimeout(() => setShowSuccessTip(false), 3000)
+      } else {
+        throw new Error('保存失败')
+      }
+    } catch (error) {
+      throw error
+    }
+  }
 
   return (
-    <div className="card p-6">
+    <div className="card p-6 relative">
+      {/* 成功提示 */}
+      {showSuccessTip && (
+        <div className="absolute top-2 right-2 bg-green-500 text-white text-xs px-3 py-2 rounded-lg shadow-lg z-20">
+          ✓ 标签保存成功，图片已移至处理区域
+        </div>
+      )}
+      
       <div
         {...getRootProps()}
         className={`border-2 border-dashed rounded-xl h-72 flex items-center justify-center text-center cursor-pointer ${
@@ -48,33 +220,64 @@ function UploadArea() {
         <div>
           <img src="/upload.png" alt="上传" className="w-16 h-16 mb-3 mx-auto" />
           <div className="font-semibold text-lg">拖拽图片到此处，或点击选择</div>
-          <div className="text-gray-500 text-sm mt-1">建议 5-50 张</div>
+          <div className="text-gray-500 text-sm mt-1">建议 5-50 张，单文件最大 50MB</div>
         </div>
       </div>
 
       {dataset.length > 0 && (
         <>
-          <div className="flex items-center justify-between mt-4">
-            <button className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200" onClick={clearDataset}>
-              清空数据
-            </button>
-            <div className="text-sm text-gray-500">分辨率低于 512px 的图片可能影响效果</div>
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 mt-4 max-h-64 overflow-auto pr-1">
-            {dataset.map((d) => (
-              <div key={d.id} className="relative group">
-                <img src={d.previewUrl} className="w-full h-28 object-cover rounded-xl" />
-                <button
-                  className="absolute -top-2 -right-2 bg-white rounded-full shadow-soft w-7 h-7 hidden group-hover:block"
-                  onClick={() => removeItem(d.id)}
-                  title="删除"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
-          </div>
+                     <div className="flex items-center justify-between mt-4">
+             <button className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200" onClick={clearDataset}>
+               清空数据
+             </button>
+             <div className="flex items-center gap-4">
+               <div className="text-sm text-gray-500">
+                 <span className="mr-2">分辨率低于 512px 的图片可能影响效果</span>
+                 <span className="text-blue-500">拖拽可调整顺序</span>
+               </div>
+               <SortOptions
+                 currentSort={sortOption}
+                 onSortChange={handleSortChange}
+                 onResetOrder={handleResetOrder}
+               />
+             </div>
+           </div>
+                     <DraggableImageGrid
+             images={dataset.filter(d => !d.isProcessed)}
+             onImageClick={handleImageClick}
+             onRemove={removeItem}
+             onReorder={handleReorder}
+             className="mt-4 max-h-64 overflow-auto pr-1 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3"
+             renderImage={(d) => (
+               <div className="relative">
+                 <OptimizedImagePreview 
+                   src={d.previewUrl} 
+                   className="w-full h-28 rounded-xl"
+                   loading="lazy"
+                 />
+                 <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-xl transition-all flex items-center justify-center">
+                   <span className="text-white text-xs opacity-0 group-hover:opacity-100">点击编辑标签</span>
+                 </div>
+                 {d.caption && (
+                   <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white text-xs p-1 rounded-b-xl truncate">
+                     {d.caption}
+                   </div>
+                 )}
+               </div>
+             )}
+           />
         </>
+      )}
+
+      {/* 标签编辑器 */}
+      {selectedImage && (
+        <ErrorBoundary>
+          <CaptionEditor
+            image={selectedImage}
+            onClose={() => setSelectedImage(null)}
+            onSave={handleSaveCaption}
+          />
+        </ErrorBoundary>
       )}
     </div>
   )
@@ -228,17 +431,28 @@ function ParamsPanel() {
 }
 
 function ProcessedImagesPanel() {
-  const [processedImages, setProcessedImages] = useState<any[]>([])
+  const { dataset, reorderDataset, removeItem } = useUI()
   const [selectedImage, setSelectedImage] = useState<any>(null)
   const [loading, setLoading] = useState(false)
+  const [existingProcessedImages, setExistingProcessedImages] = useState<any[]>([])
 
-  const loadProcessedImages = async () => {
+  // 过滤出已处理的图片
+  const processedImages = dataset.filter(item => item.isProcessed)
+
+  // 加载已存在的处理后图片
+  const loadExistingProcessedImages = async () => {
     try {
       setLoading(true)
       const res = await fetch('/api/processed-images')
       if (res.ok) {
         const data = await res.json()
-        setProcessedImages(data.images || [])
+        // 为每个图片添加唯一的id字段
+        const imagesWithId = (data.images || []).map((img: any, index: number) => ({
+          ...img,
+          id: `existing-${img.filename}-${index}`,
+          isExisting: true
+        }))
+        setExistingProcessedImages(imagesWithId)
       }
     } catch (error) {
       console.error('加载处理后图片失败:', error)
@@ -247,44 +461,92 @@ function ProcessedImagesPanel() {
     }
   }
 
+  useEffect(() => {
+    loadExistingProcessedImages()
+  }, [])
+
   const updateCaption = async (filename: string, caption: string) => {
     try {
+      console.log('更新已处理图片标签:', { filename, caption })
+      
+      // 对于已处理的图片，直接更新标签文件，不移动文件
       const res = await fetch('/api/update-caption', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename, caption })
+        body: JSON.stringify({ 
+          filename, 
+          caption,
+          isProcessed: true  // 标记这是已处理的图片
+        })
       })
+      
+      console.log('API响应状态:', res.status)
       
       if (res.ok) {
         const data = await res.json()
+        console.log('API响应数据:', data)
+        
         // 更新本地状态
-        setProcessedImages(prev => 
+        setExistingProcessedImages(prev => 
           prev.map(img => 
             img.filename === filename 
-              ? { ...img, caption: data.caption }
+              ? { ...img, caption: data.caption || caption }
               : img
           )
         )
       } else {
-        throw new Error('保存失败')
+        const errorText = await res.text()
+        console.error('API错误响应:', errorText)
+        throw new Error(`保存失败: ${res.status} - ${errorText}`)
       }
     } catch (error) {
+      console.error('更新标签时发生错误:', error)
       throw error
     }
   }
 
-  useEffect(() => {
-    loadProcessedImages()
-    // 每5秒刷新一次，以防有新处理的图片
-    const interval = setInterval(loadProcessedImages, 5000)
-    return () => clearInterval(interval)
-  }, [])
+  const handleReorder = (newOrder: any[]) => {
+    // 分离新处理的图片和已存在的图片
+    const newProcessedItems = newOrder.filter(item => !item.isExisting)
+    const existingItems = newOrder.filter(item => item.isExisting)
+    
+    // 更新dataset中的已处理图片顺序
+    if (newProcessedItems.length > 0) {
+      const unprocessedItems = dataset.filter(item => !item.isProcessed)
+      reorderDataset([...unprocessedItems, ...newProcessedItems])
+    }
+    
+    // 更新已存在图片的顺序
+    setExistingProcessedImages(existingItems)
+  }
 
-  if (processedImages.length === 0) {
+  // 合并新处理的图片和已存在的图片，避免重复
+  const allProcessedImages = useMemo(() => {
+    const processedIds = new Set(processedImages.map(img => img.id))
+    const existingWithoutDuplicates = existingProcessedImages.filter(img => !processedIds.has(img.id))
+    
+    // 为新处理的图片添加必要的属性，确保能正确显示
+    const enhancedProcessedImages = processedImages.map(img => ({
+      ...img,
+      filename: img.file ? img.file.name : img.filename,
+      path: img.path || `/workspace/processed/dataset/${img.file ? img.file.name : img.filename}`,
+      previewUrl: img.previewUrl || `/workspace/processed/dataset/${img.file ? img.file.name : img.filename}`
+    }))
+    
+    // 确保已存在的图片也有正确的filename字段
+    const enhancedExistingImages = existingWithoutDuplicates.map(img => ({
+      ...img,
+      filename: img.filename || 'unknown'  // 确保filename字段存在
+    }))
+    
+    return [...enhancedProcessedImages, ...enhancedExistingImages]
+  }, [processedImages, existingProcessedImages])
+
+  if (allProcessedImages.length === 0) {
     return (
       <div className="card p-6 mt-4">
         <div className="text-center text-gray-500">
-          {loading ? '正在加载...' : '暂无处理后的图片，请先上传并处理图片'}
+          {loading ? '正在加载...' : '暂无处理后的图片，请先在上方上传并编辑标签'}
         </div>
       </div>
     )
@@ -293,35 +555,72 @@ function ProcessedImagesPanel() {
   return (
     <>
       <div className="card p-6 mt-4">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-semibold">处理后的图片与标签</h3>
-          <button 
-            onClick={loadProcessedImages}
-            className="px-3 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200"
-          >
-            刷新
-          </button>
-        </div>
+                 <div className="flex items-center justify-between mb-4">
+           <h3 className="font-semibold">处理后的图片与标签 ({allProcessedImages.length})</h3>
+           <div className="flex items-center gap-2">
+             <span className="text-xs text-blue-500">拖拽可调整顺序</span>
+             <button 
+               onClick={loadExistingProcessedImages}
+               className="px-3 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200"
+             >
+               刷新
+             </button>
+           </div>
+         </div>
         
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 max-h-80 overflow-auto">
-          {processedImages.map((image) => (
-            <div key={image.filename} className="group cursor-pointer" onClick={() => setSelectedImage(image)}>
-              <div className="relative">
-                <img 
-                  src={`http://127.0.0.1:8000${image.path}`}
-                  alt={image.filename}
-                  className="w-full h-24 object-cover rounded-lg border hover:border-blue-400 transition-colors"
-                />
-                <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-lg transition-all flex items-center justify-center">
-                  <span className="text-white text-xs opacity-0 group-hover:opacity-100">点击编辑标签</span>
-                </div>
-              </div>
-              <div className="text-xs text-gray-600 mt-1 truncate" title={image.caption}>
-                {image.caption || '无标签'}
-              </div>
-            </div>
-          ))}
-        </div>
+                 <DraggableImageGrid
+           images={allProcessedImages}
+           onImageClick={setSelectedImage}
+           onRemove={async (id) => {
+             const image = allProcessedImages.find(img => img.id === id)
+             if (image) {
+               // 立即从UI中移除，提升响应速度
+               if (image.isExisting) {
+                 // 立即更新UI
+                 setExistingProcessedImages(prev => prev.filter(img => img.id !== id))
+                 
+                 // 在后台异步删除文件
+                 setTimeout(async () => {
+                   try {
+                     const res = await fetch('/api/delete-image', {
+                       method: 'DELETE',
+                       headers: { 'Content-Type': 'application/json' },
+                       body: JSON.stringify({ filename: image.filename })
+                     })
+                     
+                     if (!res.ok) {
+                       console.error('删除图片失败:', await res.text())
+                       // 如果删除失败，可以考虑重新添加到UI中
+                     }
+                   } catch (error) {
+                     console.error('删除图片时发生错误:', error)
+                   }
+                 }, 0)
+               } else {
+                 // 对于新处理的图片，使用store的removeItem
+                 removeItem(id)
+               }
+             }
+           }}
+           onReorder={handleReorder}
+           className="max-h-80 overflow-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3"
+           renderImage={(image) => (
+             <div className="relative">
+               <OptimizedImagePreview 
+                 src={image.previewUrl || `http://127.0.0.1:8000${image.path}`}
+                 alt={image.file?.name || image.filename}
+                 className="w-full h-24 rounded-lg border hover:border-blue-400 transition-colors"
+                 loading="lazy"
+               />
+               <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-lg transition-all flex items-center justify-center">
+                 <span className="text-white text-xs opacity-0 group-hover:opacity-100">点击编辑标签</span>
+               </div>
+               <div className="text-xs text-gray-600 mt-1 truncate" title={image.caption}>
+                 {image.caption || '无标签'}
+               </div>
+             </div>
+           )}
+         />
       </div>
       
       {selectedImage && (
