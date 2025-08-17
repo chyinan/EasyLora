@@ -98,7 +98,7 @@ async def update_settings_api(payload: dict):
 
 @app.get("/api/processed-images")
 async def get_processed_images():
-    """获取已处理的图片列表和对应的标签"""
+    """获取已处理的图片列表和对应的标签（只返回有真正标签的图片）"""
     try:
         dataset_dir = Path("workspace/processed/dataset")
         if not dataset_dir.exists():
@@ -116,11 +116,17 @@ async def get_processed_images():
                     except:
                         pass
                 
-                images.append({
-                    "filename": img_file.name,
-                    "path": f"/workspace/processed/dataset/{img_file.name}",
-                    "caption": caption
-                })
+                # 只包含有真正标签内容的图片（排除只有默认序号的图片）
+                if caption and caption.strip():
+                    caption_trimmed = caption.strip()
+                    # 检查是否是默认的序号标签（只包含文件名，没有逗号分隔的标签）
+                    if ("," in caption_trimmed and len(caption_trimmed) > 20) or \
+                       (not caption_trimmed.startswith("img_") and len(caption_trimmed) > 10):
+                        images.append({
+                            "filename": img_file.name,
+                            "path": f"/workspace/processed/dataset/{img_file.name}",
+                            "caption": caption
+                        })
         
         return {"images": images}
     except Exception as e:

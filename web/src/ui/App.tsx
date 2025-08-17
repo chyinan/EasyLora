@@ -492,7 +492,7 @@ function ProcessedImagesPanel() {
     setExistingProcessedImages(existingItems)
   }
 
-  // 合并新处理的图片和已存在的图片，避免重复
+  // 合并新处理的图片和已存在的图片，避免重复，只显示有真正标签的图片
   const allProcessedImages = useMemo(() => {
     const processedIds = new Set(processedImages.map(img => img.id))
     const existingWithoutDuplicates = existingProcessedImages.filter(img => !processedIds.has(img.id))
@@ -511,7 +511,22 @@ function ProcessedImagesPanel() {
       filename: img.filename || 'unknown'  // 确保filename字段存在
     }))
     
-    return [...enhancedProcessedImages, ...enhancedExistingImages]
+    // 只返回有真正标签内容的图片（排除只有默认序号的图片）
+    const allImages = [...enhancedProcessedImages, ...enhancedExistingImages]
+    return allImages.filter(img => {
+      if (!img.caption || img.caption.trim() === '') return false
+      
+      const caption = img.caption.trim()
+      // 检查是否是默认的序号标签（只包含文件名，没有逗号分隔的标签）
+      if (caption.includes(',') && caption.length > 20) {
+        // 有真正的标签内容（包含逗号且长度足够）
+        return true
+      } else if (!caption.startsWith('img_') && caption.length > 10) {
+        // 不是默认序号且长度足够
+        return true
+      }
+      return false
+    })
   }, [processedImages, existingProcessedImages])
 
   if (allProcessedImages.length === 0) {

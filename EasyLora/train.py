@@ -44,6 +44,36 @@ from .config import (
 )
 
 
+def filter_images_with_captions(dataset_dir: Path) -> List[Path]:
+    """筛选出有真正标签内容的图片（排除只有默认序号的图片）"""
+    images_with_captions = []
+    
+    # 支持的图片格式
+    supported_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+    
+    for img_file in dataset_dir.iterdir():
+        if img_file.is_file() and img_file.suffix.lower() in supported_exts:
+            # 检查是否有对应的标签文件
+            caption_file = img_file.with_suffix(".txt")
+            if caption_file.exists():
+                try:
+                    # 检查标签文件是否有内容
+                    caption_content = caption_file.read_text(encoding="utf-8").strip()
+                    if caption_content:
+                        # 检查是否是默认的序号标签（只包含文件名，没有逗号分隔的标签）
+                        if "," in caption_content and len(caption_content) > 20:
+                            # 有真正的标签内容（包含逗号且长度足够）
+                            images_with_captions.append(img_file)
+                        elif not caption_content.startswith("img_") and len(caption_content) > 10:
+                            # 不是默认序号且长度足够
+                            images_with_captions.append(img_file)
+                except Exception:
+                    # 如果读取失败，跳过这个文件
+                    continue
+    
+    return sorted(images_with_captions)
+
+
 # 延迟导入以缩短 CLI 启动开销
 def _lazy_import_diffusers():
     from diffusers import StableDiffusionPipeline
@@ -119,12 +149,23 @@ def train_lora(
         sdxl_th = int(get_settings().get('RES_THRESHOLD_SDXL', 900))
     except Exception:
         sdxl_th = 900
+    # 筛选有标签的图片数量（用于参数计算）
+    if processed_dir.exists():
+        dataset_dir = processed_dir / "dataset"
+        if dataset_dir.exists():
+            filtered_images = filter_images_with_captions(dataset_dir)
+            actual_image_count = len(filtered_images)
+        else:
+            actual_image_count = len(image_paths)
+    else:
+        actual_image_count = len(image_paths)
+    
     if avg_long_side >= sdxl_th:
-        params: AutoTrainParams = auto_params_sdxl(len(image_paths))
+        params: AutoTrainParams = auto_params_sdxl(actual_image_count)
         callbacks.log("检测为 SDXL 任务，将使用 SDXL 默认参数与基底模型")
     else:
         image_size = auto_select_image_size(avg_long_side)
-        params = auto_params_by_dataset(len(image_paths), image_size)
+        params = auto_params_by_dataset(actual_image_count, image_size)
 
     # 覆盖来自前端的步数/学习率
     if override_steps is not None and override_steps > 0:
@@ -134,6 +175,7 @@ def train_lora(
 
     callbacks.log(f"选择尺寸: {params.image_size}, 模型: {params.model_id}")
     callbacks.log(f"训练步数: {params.train_steps}, 学习率: {params.learning_rate}, LoRA rank: {params.lora_rank}")
+    callbacks.log(f"实际使用图片数量: {actual_image_count} 张（已筛选有标签的图片）")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device != "cuda":
@@ -152,8 +194,7 @@ def train_lora(
 
     if kohya_path is not None:
         callbacks.log("检测到 sd-scripts，使用 kohya-ss 进行训练...")
-        # 确保每张图对应的 caption .txt 存在于 processed_dir（sd-scripts 读取同名 .txt）
-        _mirror_captions_next_to_images(processed_dir, captions_dir, image_paths)
+        # 注意：_mirror_captions_next_to_images 不再需要，因为我们在 _run_kohya_training 中已经创建了临时数据集目录
         # 将保存与断点参数从上层透传（若存在）
         save_every = override_save_every if override_save_every is not None else int(settings.get("DEFAULT_SAVE_EVERY", 0))
         auto_resume_flag = bool(override_auto_resume if override_auto_resume is not None else settings.get("DEFAULT_AUTO_RESUME", False))
@@ -399,10 +440,35 @@ def _run_kohya_training(kohya_train_py: Path, params: AutoTrainParams, train_dir
 
     # 为 sd-scripts 生成 dataset_config（避免 "No data found"，允许直接用图像+同名 .txt）
     # 若检测到标准结构 processed/dataset，则优先使用该子目录
-    # 不在此处过滤小图，统一交给分桶与上采样处理
+    # 筛选出有标签文件的图片，创建临时数据集目录
     base_dir_abs = Path(train_dir).resolve()
     candidate_dataset_dir = base_dir_abs / "dataset"
-    image_dir_abs = candidate_dataset_dir if candidate_dataset_dir.exists() else base_dir_abs
+    
+    if candidate_dataset_dir.exists():
+        # 筛选有标签的图片
+        images_with_captions = filter_images_with_captions(candidate_dataset_dir)
+        callbacks.log(f"检测到 {len(images_with_captions)} 张有标签的图片")
+        
+        if not images_with_captions:
+            raise RuntimeError("没有找到有标签的图片，请先为图片添加标签")
+        
+        # 创建临时数据集目录，只包含有标签的图片
+        temp_dataset_dir = output_dir / "temp_dataset"
+        temp_dataset_dir.mkdir(exist_ok=True)
+        
+        # 复制有标签的图片和对应的标签文件到临时目录
+        for img_path in images_with_captions:
+            caption_path = img_path.with_suffix(".txt")
+            # 复制图片
+            shutil.copy2(img_path, temp_dataset_dir / img_path.name)
+            # 复制标签文件
+            shutil.copy2(caption_path, temp_dataset_dir / caption_path.name)
+        
+        image_dir_abs = temp_dataset_dir
+        callbacks.log(f"已创建临时数据集目录，包含 {len(images_with_captions)} 张图片")
+    else:
+        image_dir_abs = base_dir_abs
+    
     image_dir_posix = image_dir_abs.as_posix()
     dataset_config_path = output_dir / "dataset_config_auto.toml"
     try:
