@@ -5,75 +5,9 @@ import Settings from './Settings'
 import CaptionEditor from './CaptionEditor'
 import { ErrorBoundary } from './ErrorBoundary'
 import DraggableImageGrid from './DraggableImageGrid'
+import VirtualImageGrid from './VirtualImageGrid'
+import LazyImage from './LazyImage'
 import SortOptions, { SortOption } from './SortOptions'
-
-// 优化的图片预览组件
-function OptimizedImagePreview({ src, alt, className, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) {
-  const [isLoaded, setIsLoaded] = useState(false)
-  const [error, setError] = useState(false)
-  const imgRef = useRef<HTMLImageElement>(null)
-
-  useEffect(() => {
-    const img = imgRef.current
-    if (!img) return
-
-    // 重置状态
-    setIsLoaded(false)
-    setError(false)
-
-    const handleLoad = () => {
-      setIsLoaded(true)
-      setError(false)
-    }
-    const handleError = () => {
-      setError(true)
-      setIsLoaded(false)
-    }
-
-    img.addEventListener('load', handleLoad)
-    img.addEventListener('error', handleError)
-
-    // 如果图片已经加载完成，立即设置状态
-    if (img.complete) {
-      if (img.naturalWidth > 0) {
-        handleLoad()
-      } else {
-        handleError()
-      }
-    }
-
-    return () => {
-      img.removeEventListener('load', handleLoad)
-      img.removeEventListener('error', handleError)
-    }
-  }, [src]) // 添加src作为依赖，当src改变时重新设置监听器
-
-  if (error) {
-    return (
-      <div className={`${className} bg-gray-100 flex items-center justify-center text-gray-400 text-xs`}>
-        加载失败
-      </div>
-    )
-  }
-
-  return (
-    <div className={`${className} relative overflow-hidden bg-gray-50`}>
-      <img
-        ref={imgRef}
-        src={src}
-        alt={alt}
-        className={`w-full h-full object-cover ${isLoaded ? 'opacity-100' : 'opacity-90'}`}
-        style={{ transition: 'opacity 0.2s ease-in-out' }}
-        {...props}
-      />
-      {!isLoaded && (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin"></div>
-        </div>
-      )}
-    </div>
-  )
-}
 
 function SettingsButton() {
   const { settingsOpen, set } = useUI()
@@ -107,9 +41,12 @@ function UploadArea() {
   const [selectedImage, setSelectedImage] = useState<any>(null)
   const [showSuccessTip, setShowSuccessTip] = useState(false)
   
-  // 组件加载时同步已存在的标签
+  // 组件加载时同步已存在的标签和raw_uploads中的图片
   useEffect(() => {
     syncExistingCaptions()
+    // 加载raw_uploads中未处理的图片
+    const { loadRawUploads } = useUI.getState()
+    loadRawUploads()
   }, [syncExistingCaptions])
 
   // 组件卸载时清理预览URL
@@ -175,16 +112,34 @@ function UploadArea() {
 
   const handleSaveCaption = async (filename: string, caption: string) => {
     try {
+      // 获取当前设置，决定是否自动添加模型名称前缀
+      const { settings, modelName } = useUI.getState()
+      const autoAddPrefix = settings?.AUTO_ADD_MODEL_NAME_PREFIX
+      
+      let finalCaption = caption
+      if (autoAddPrefix && modelName && modelName.trim()) {
+        // 如果开启了自动添加前缀，且用户输入的标签不以模型名称开头，则自动添加
+        const modelNameTrimmed = modelName.trim()
+        if (!finalCaption.trim().startsWith(modelNameTrimmed)) {
+          finalCaption = `${modelNameTrimmed}, ${finalCaption.trim()}`
+        }
+      }
+      
       const res = await fetch('/api/update-caption', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename, caption })
+        body: JSON.stringify({ 
+          filename, 
+          caption: finalCaption,
+          autoAddPrefix: autoAddPrefix || false,
+          modelName: modelName || ''
+        })
       })
       
       if (res.ok) {
-        // 如果是新上传的图片，更新本地状态
+        // 更新本地状态
         if (selectedImage.id) {
-          updateItemCaption(selectedImage.id, caption)
+          updateItemCaption(selectedImage.id, finalCaption)
           markItemAsProcessed(selectedImage.id)
         }
         
@@ -242,30 +197,32 @@ function UploadArea() {
                />
              </div>
            </div>
-                     <DraggableImageGrid
-             images={dataset.filter(d => !d.isProcessed)}
-             onImageClick={handleImageClick}
-             onRemove={removeItem}
-             onReorder={handleReorder}
-             className="mt-4 max-h-64 overflow-auto pr-1 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3"
-             renderImage={(d) => (
-               <div className="relative">
-                 <OptimizedImagePreview 
-                   src={d.previewUrl} 
-                   className="w-full h-28 rounded-xl"
-                   loading="lazy"
-                 />
-                 <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-xl transition-all flex items-center justify-center">
-                   <span className="text-white text-xs opacity-0 group-hover:opacity-100">点击编辑标签</span>
-                 </div>
-                 {d.caption && (
-                   <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white text-xs p-1 rounded-b-xl truncate">
-                     {d.caption}
-                   </div>
-                 )}
-               </div>
-             )}
-           />
+                                           <VirtualImageGrid
+                        images={dataset.filter(d => !d.isProcessed)}
+                        onImageClick={handleImageClick}
+                        onRemove={removeItem}
+                        onReorder={handleReorder}
+                        className="mt-4 max-h-64 pr-1"
+                        itemHeight={120}
+                        renderImage={(d) => (
+                          <div className="relative">
+                            <LazyImage 
+                              src={d.previewUrl} 
+                              className="w-full h-28 rounded-xl"
+                              loading="lazy"
+                              alt={d.file?.name || d.filename || 'unknown'}
+                            />
+                            <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-xl transition-all flex items-center justify-center">
+                              <span className="text-white text-xs opacity-0 group-hover:opacity-100">点击编辑标签</span>
+                            </div>
+                            {d.caption && (
+                              <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white text-xs p-1 rounded-b-xl truncate">
+                                {d.caption}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      />
         </>
       )}
 
@@ -469,14 +426,29 @@ function ProcessedImagesPanel() {
     try {
       console.log('更新已处理图片标签:', { filename, caption })
       
+      // 获取当前设置，决定是否自动添加模型名称前缀
+      const { settings, modelName } = useUI.getState()
+      const autoAddPrefix = settings?.AUTO_ADD_MODEL_NAME_PREFIX
+      
+      let finalCaption = caption
+      if (autoAddPrefix && modelName && modelName.trim()) {
+        // 如果开启了自动添加前缀，且用户输入的标签不以模型名称开头，则自动添加
+        const modelNameTrimmed = modelName.trim()
+        if (!finalCaption.trim().startsWith(modelNameTrimmed)) {
+          finalCaption = `${modelNameTrimmed}, ${finalCaption.trim()}`
+        }
+      }
+      
       // 对于已处理的图片，直接更新标签文件，不移动文件
       const res = await fetch('/api/update-caption', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           filename, 
-          caption,
-          isProcessed: true  // 标记这是已处理的图片
+          caption: finalCaption,
+          isProcessed: true,  // 标记这是已处理的图片
+          autoAddPrefix: autoAddPrefix || false,
+          modelName: modelName || ''
         })
       })
       
@@ -490,7 +462,7 @@ function ProcessedImagesPanel() {
         setExistingProcessedImages(prev => 
           prev.map(img => 
             img.filename === filename 
-              ? { ...img, caption: data.caption || caption }
+              ? { ...img, caption: data.caption || finalCaption }
               : img
           )
         )
@@ -568,59 +540,60 @@ function ProcessedImagesPanel() {
            </div>
          </div>
         
-                 <DraggableImageGrid
-           images={allProcessedImages}
-           onImageClick={setSelectedImage}
-           onRemove={async (id) => {
-             const image = allProcessedImages.find(img => img.id === id)
-             if (image) {
-               // 立即从UI中移除，提升响应速度
-               if (image.isExisting) {
-                 // 立即更新UI
-                 setExistingProcessedImages(prev => prev.filter(img => img.id !== id))
-                 
-                 // 在后台异步删除文件
-                 setTimeout(async () => {
-                   try {
-                     const res = await fetch('/api/delete-image', {
-                       method: 'DELETE',
-                       headers: { 'Content-Type': 'application/json' },
-                       body: JSON.stringify({ filename: image.filename })
-                     })
-                     
-                     if (!res.ok) {
-                       console.error('删除图片失败:', await res.text())
-                       // 如果删除失败，可以考虑重新添加到UI中
-                     }
-                   } catch (error) {
-                     console.error('删除图片时发生错误:', error)
-                   }
-                 }, 0)
-               } else {
-                 // 对于新处理的图片，使用store的removeItem
-                 removeItem(id)
-               }
-             }
-           }}
-           onReorder={handleReorder}
-           className="max-h-80 overflow-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3"
-           renderImage={(image) => (
-             <div className="relative">
-               <OptimizedImagePreview 
-                 src={image.previewUrl || `http://127.0.0.1:8000${image.path}`}
-                 alt={image.file?.name || image.filename}
-                 className="w-full h-24 rounded-lg border hover:border-blue-400 transition-colors"
-                 loading="lazy"
-               />
-               <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-lg transition-all flex items-center justify-center">
-                 <span className="text-white text-xs opacity-0 group-hover:opacity-100">点击编辑标签</span>
-               </div>
-               <div className="text-xs text-gray-600 mt-1 truncate" title={image.caption}>
-                 {image.caption || '无标签'}
-               </div>
-             </div>
-           )}
-         />
+                                   <VirtualImageGrid
+                    images={allProcessedImages}
+                    onImageClick={setSelectedImage}
+                    onRemove={async (id) => {
+                      const image = allProcessedImages.find(img => img.id === id)
+                      if (image) {
+                        // 立即从UI中移除，提升响应速度
+                        if (image.isExisting) {
+                          // 立即更新UI
+                          setExistingProcessedImages(prev => prev.filter(img => img.id !== id))
+                          
+                          // 在后台异步删除文件
+                          setTimeout(async () => {
+                            try {
+                              const res = await fetch('/api/delete-image', {
+                                method: 'DELETE',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ filename: image.filename })
+                              })
+                              
+                              if (!res.ok) {
+                                console.error('删除图片失败:', await res.text())
+                                // 如果删除失败，可以考虑重新添加到UI中
+                              }
+                            } catch (error) {
+                              console.error('删除图片时发生错误:', error)
+                            }
+                          }, 0)
+                        } else {
+                          // 对于新处理的图片，使用store的removeItem
+                          removeItem(id)
+                        }
+                      }
+                    }}
+                    onReorder={handleReorder}
+                    className="max-h-80"
+                    itemHeight={100}
+                                          renderImage={(image) => (
+                        <div className="relative">
+                          <LazyImage 
+                            src={image.previewUrl || `http://127.0.0.1:8000${image.path}`}
+                            alt={image.file?.name || image.filename}
+                            className="w-full h-24 rounded-lg border hover:border-blue-400 transition-colors"
+                            loading="lazy"
+                          />
+                          <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-lg transition-all flex items-center justify-center">
+                            <span className="text-white text-xs opacity-0 group-hover:opacity-100">点击编辑标签</span>
+                          </div>
+                          <div className="text-xs text-gray-600 mt-2 mb-1 truncate" title={image.caption}>
+                            {image.caption || '无标签'}
+                          </div>
+                        </div>
+                      )}
+                  />
       </div>
       
       {selectedImage && (

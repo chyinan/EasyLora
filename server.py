@@ -127,6 +127,32 @@ async def get_processed_images():
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 
+@app.get("/api/raw-uploads")
+async def get_raw_uploads():
+    """获取raw_uploads目录中未处理的图片列表"""
+    try:
+        raw_dir = Path("workspace/raw_uploads")
+        if not raw_dir.exists():
+            return {"images": []}
+        
+        images = []
+        # 支持多种图片格式
+        for ext in ["*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp"]:
+            for img_file in sorted(raw_dir.glob(ext)):
+                # 检查是否已经在processed目录中
+                processed_file = Path("workspace/processed/dataset") / img_file.name
+                if not processed_file.exists():
+                    images.append({
+                        "filename": img_file.name,
+                        "path": f"/workspace/raw_uploads/{img_file.name}",
+                        "isRaw": True
+                    })
+        
+        return {"images": images}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
 @app.get("/api/system-stats")
 async def system_stats():
     """返回 GPU 名称、CPU 名称以及 RAM 使用比例（百分比，取整）。
@@ -223,20 +249,31 @@ async def update_caption(payload: dict):
         filename = payload.get("filename")
         caption = payload.get("caption", "")
         is_processed = payload.get("isProcessed", False)
+        auto_add_prefix = payload.get("autoAddPrefix", False)
+        user_model_name = payload.get("modelName", "")
         
         if not filename:
             return JSONResponse(status_code=400, content={"ok": False, "error": "缺少文件名"})
         
-        # 确保标签以模型名称开头
-        settings = get_settings()
-        model_prefix = settings.get("CAPTION_PREFIX", "shinkai_style")
-        
-        if caption.strip():
-            # 如果用户输入的标签不以模型前缀开头，则自动添加
-            if not caption.strip().startswith(model_prefix):
-                caption = f"{model_prefix}, {caption.strip()}"
+        # 根据设置决定是否自动添加模型名称前缀
+        if auto_add_prefix and user_model_name and user_model_name.strip():
+            # 如果开启了自动添加前缀，且用户输入的标签不以模型名称开头，则自动添加
+            model_name_trimmed = user_model_name.strip()
+            if caption.strip() and not caption.strip().startswith(model_name_trimmed):
+                caption = f"{model_name_trimmed}, {caption.strip()}"
+            elif not caption.strip():
+                caption = model_name_trimmed
         else:
-            caption = model_prefix
+            # 使用传统的CAPTION_PREFIX设置
+            settings = get_settings()
+            model_prefix = settings.get("CAPTION_PREFIX", "shinkai_style")
+            
+            if caption.strip():
+                # 如果用户输入的标签不以模型前缀开头，则自动添加
+                if not caption.strip().startswith(model_prefix):
+                    caption = f"{model_prefix}, {caption.strip()}"
+            else:
+                caption = model_prefix
         
         if is_processed:
             # 对于已处理的图片，直接更新标签文件，不移动文件
@@ -307,6 +344,30 @@ async def delete_image(payload: dict):
             txt_file.unlink()
         
         return {"ok": True, "message": f"已删除 {filename}"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.delete("/api/delete-raw-image")
+async def delete_raw_image(payload: dict):
+    """删除raw_uploads目录中的图片文件"""
+    try:
+        filename = payload.get("filename")
+        
+        if not filename:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "缺少文件名"})
+        
+        raw_dir = Path("workspace/raw_uploads")
+        img_file = raw_dir / filename
+        
+        # 检查文件是否存在
+        if not img_file.exists():
+            return JSONResponse(status_code=404, content={"ok": False, "error": "文件不存在"})
+        
+        # 删除图片文件
+        img_file.unlink()
+        
+        return {"ok": True, "message": f"已删除raw_uploads中的 {filename}"}
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 

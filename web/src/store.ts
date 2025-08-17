@@ -8,10 +8,12 @@ export type BaseModel = 'SD1.5' | 'SD2.1' | 'SDXL'
 
 export interface DatasetItem {
   id: string
-  file: File
+  file: File | null
+  filename?: string
   previewUrl: string
   caption?: string
   isProcessed?: boolean
+  isRaw?: boolean
 }
 
 interface UIState {
@@ -42,6 +44,7 @@ interface UIState {
   updateItemCaption: (id: string, caption: string) => void
   markItemAsProcessed: (id: string) => void
   syncExistingCaptions: () => void
+  loadRawUploads: () => void
   reorderDataset: (newOrder: DatasetItem[]) => void
   setSortOption: (option: SortOption) => void
 }
@@ -111,6 +114,7 @@ export const useUI = create<UIState>()(
           items.push({
             id: `${file.name}-${Math.random().toString(36).slice(2)}`,
             file: file,
+            filename: file.name,
             previewUrl: URL.createObjectURL(file),
           })
         }
@@ -143,6 +147,27 @@ export const useUI = create<UIState>()(
                   console.error('删除图片文件失败:', error)
                   // 如果删除失败，可以考虑重新添加到UI中
                 })
+              }, 0)
+            }
+          }
+          
+          // 如果是raw_uploads中的图片，在后台异步删除文件
+          if (item.isRaw) {
+            const filename = item.filename
+            if (filename) {
+              setTimeout(async () => {
+                try {
+                  const res = await fetch('/api/delete-raw-image', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename })
+                  })
+                  if (!res.ok) {
+                    console.error('删除raw_uploads图片失败:', await res.text())
+                  }
+                } catch (error) {
+                  console.error('删除raw_uploads图片时发生错误:', error)
+                }
               }, 0)
             }
           }
@@ -205,10 +230,42 @@ export const useUI = create<UIState>()(
               })
             }
           }
-                 } catch (error) {
-           console.error('同步已存在标签失败:', error)
-         }
-       },
+        } catch (error) {
+          console.error('同步已存在标签失败:', error)
+        }
+      },
+      
+      loadRawUploads: async () => {
+        try {
+          const res = await fetch('/api/raw-uploads')
+          if (res.ok) {
+            const data = await res.json()
+            const rawImages = data.images || []
+            
+            // 过滤掉已经在dataset中的图片
+            const currentDataset = get().dataset
+            const existingFilenames = new Set(currentDataset.map(item => item.file?.name))
+            
+            const newRawItems = rawImages
+              .filter((img: any) => !existingFilenames.has(img.filename))
+              .map((img: any) => ({
+                id: `raw-${img.filename}-${Math.random().toString(36).slice(2)}`,
+                file: null, // raw_uploads中的图片没有File对象
+                filename: img.filename,
+                previewUrl: `http://127.0.0.1:8000${img.path}`,
+                isRaw: true,
+                caption: undefined
+              }))
+            
+            if (newRawItems.length > 0) {
+              set({ dataset: [...currentDataset, ...newRawItems] })
+              console.log(`加载了 ${newRawItems.length} 张未处理的图片`)
+            }
+          }
+        } catch (error) {
+          console.error('加载raw_uploads图片失败:', error)
+        }
+      },
        reorderDataset: (newOrder: DatasetItem[]) => {
          set({ dataset: newOrder })
        },

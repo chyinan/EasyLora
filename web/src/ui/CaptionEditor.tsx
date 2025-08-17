@@ -63,7 +63,8 @@ export default function CaptionEditor({ image, onClose, onSave }: CaptionEditorP
         imageFile: image.file?.name, 
         imageFilename: image.filename, 
         finalFilename: filename,
-        caption 
+        caption,
+        isRaw: image.isRaw
       })
       await onSave(filename, caption)
       onClose()

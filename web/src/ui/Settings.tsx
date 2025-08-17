@@ -176,6 +176,10 @@ export default function Settings({ onClose }: Props) {
                 <Input label="数据增强份数 augment_factor" field="AUGMENT_FACTOR" type="number" />
                 <Input label="Caption 前缀" field="CAPTION_PREFIX" />
                 <Input label="Caption 后缀" field="CAPTION_SUFFIX" />
+                <Switch label="自动在标签开头添加模型名称" field="AUTO_ADD_MODEL_NAME_PREFIX" />
+                <div className="text-xs text-gray-500 mt-1 ml-4">
+                开启后，新导入图片的标签会自动在开头添加当前设置的模型名称
+                </div>
                 <Input label="保存最近 N 次步数" field="SAVE_LAST_N_STEPS" type="number" />
                 <Input label="保存最近 N 次 epoch" field="SAVE_LAST_N_EPOCHS" type="number" />
                 <Input label="额外参数透传(--network_args 等)" field="EXTRA_ARGS" placeholder="key=value;key2=value2" />
