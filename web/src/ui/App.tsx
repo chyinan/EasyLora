@@ -35,6 +35,74 @@ function TopBar() {
   )
 }
 
+// Helper to construct thumbnail URL
+const getThumbnailUrl = (pathOrUrl: string, size = 200) => {
+  if (!pathOrUrl) return '';
+  if (pathOrUrl.startsWith('blob:')) return pathOrUrl; // Client-side blob
+
+  // Handle server paths
+  // The path stored in state might be "/workspace/..." or full url "http://.../workspace/..."
+  let path = pathOrUrl;
+  if (path.startsWith('http')) {
+     try {
+       const url = new URL(path);
+       path = url.pathname;
+     } catch (e) {
+       // If URL parsing fails, just use the path as is if it looks relative
+     }
+  }
+  
+  // Check if it looks like a server path we can generate thumbnail for
+  if (path.startsWith('/workspace/') || path.startsWith('workspace/')) {
+    // Ensure leading slash for consistency when passing to API logic or matching
+    const cleanPath = path.startsWith('/') ? path : '/' + path;
+    return `/api/thumbnail?path=${encodeURIComponent(cleanPath)}&width=${size}&height=${size}`;
+  }
+  
+  return pathOrUrl;
+};
+
+// Memoized Dataset Item Component
+const DatasetImageItem = React.memo(({ image }: { image: any }) => (
+  <div className="relative h-full">
+    <LazyImage 
+      src={getThumbnailUrl(image.previewUrl)} 
+      className="w-full h-28 rounded-xl bg-gray-100"
+      loading="lazy"
+      alt={image.file?.name || image.filename || 'unknown'}
+    />
+    <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-xl transition-all flex items-center justify-center">
+      <span className="text-white text-xs opacity-0 group-hover:opacity-100">点击编辑标签</span>
+    </div>
+    {image.caption && (
+      <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white text-xs p-1 rounded-b-xl truncate">
+        {image.caption}
+      </div>
+    )}
+  </div>
+));
+
+// Memoized Processed Item Component
+const ProcessedImageItem = React.memo(({ image }: { image: any }) => {
+  const src = image.previewUrl || `http://127.0.0.1:8000${image.path}`;
+  return (
+    <div className="relative h-full">
+      <LazyImage 
+        src={getThumbnailUrl(src)}
+        alt={image.file?.name || image.filename}
+        className="w-full h-24 rounded-lg border hover:border-blue-400 transition-colors bg-gray-100"
+        loading="lazy"
+      />
+      <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-lg transition-all flex items-center justify-center">
+        <span className="text-white text-xs opacity-0 group-hover:opacity-100">点击编辑标签</span>
+      </div>
+      <div className="text-xs text-gray-600 mt-2 mb-1 truncate" title={image.caption}>
+        {image.caption || '无标签'}
+      </div>
+    </div>
+  );
+});
+
 // 优化的上传区域组件
 function UploadArea() {
   const { dataset, addFiles, removeItem, clearDataset, updateItemCaption, markItemAsProcessed, syncExistingCaptions, reorderDataset, sortOption, setSortOption } = useUI()
@@ -94,21 +162,21 @@ function UploadArea() {
     multiple: true
   })
 
-  const handleImageClick = (image: any) => {
+  const handleImageClick = useCallback((image: any) => {
     setSelectedImage(image)
-  }
+  }, [])
 
-  const handleReorder = (newOrder: any[]) => {
+  const handleReorder = useCallback((newOrder: any[]) => {
     reorderDataset(newOrder)
-  }
+  }, [reorderDataset])
 
-  const handleSortChange = (option: SortOption) => {
+  const handleSortChange = useCallback((option: SortOption) => {
     setSortOption(option)
-  }
+  }, [setSortOption])
 
-  const handleResetOrder = () => {
+  const handleResetOrder = useCallback(() => {
     setSortOption('custom')
-  }
+  }, [setSortOption])
 
   const handleSaveCaption = async (filename: string, caption: string) => {
     try {
@@ -156,6 +224,11 @@ function UploadArea() {
     }
   }
 
+  // Filter dataset once per render or memoize it
+  const filteredDataset = useMemo(() => dataset.filter(d => !d.isProcessed), [dataset]);
+  
+  const renderImage = useCallback((d: any) => <DatasetImageItem image={d} />, []);
+
   return (
     <div className="card p-6 relative">
       {/* 成功提示 */}
@@ -181,14 +254,13 @@ function UploadArea() {
 
       {dataset.length > 0 && (
         <>
-                     <div className="flex items-center justify-between mt-4">
+           <div className="flex items-center justify-between mt-4">
              <button className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200" onClick={clearDataset}>
                清空数据
              </button>
              <div className="flex items-center gap-4">
                <div className="text-sm text-gray-500">
                  <span className="mr-2">分辨率低于 512px 的图片可能影响效果</span>
-                 <span className="text-blue-500">拖拽可调整顺序</span>
                </div>
                <SortOptions
                  currentSort={sortOption}
@@ -197,32 +269,15 @@ function UploadArea() {
                />
              </div>
            </div>
-                                           <VirtualImageGrid
-                        images={dataset.filter(d => !d.isProcessed)}
-                        onImageClick={handleImageClick}
-                        onRemove={removeItem}
-                        onReorder={handleReorder}
-                        className="mt-4 max-h-64 pr-1"
-                        itemHeight={120}
-                        renderImage={(d) => (
-                          <div className="relative">
-                            <LazyImage 
-                              src={d.previewUrl} 
-                              className="w-full h-28 rounded-xl"
-                              loading="lazy"
-                              alt={d.file?.name || d.filename || 'unknown'}
-                            />
-                            <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-xl transition-all flex items-center justify-center">
-                              <span className="text-white text-xs opacity-0 group-hover:opacity-100">点击编辑标签</span>
-                            </div>
-                            {d.caption && (
-                              <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white text-xs p-1 rounded-b-xl truncate">
-                                {d.caption}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      />
+           <VirtualImageGrid
+              images={filteredDataset}
+              onImageClick={handleImageClick}
+              onRemove={removeItem}
+              onReorder={handleReorder}
+              className="mt-4 max-h-64 pr-1"
+              itemHeight={120}
+              renderImage={renderImage}
+            />
         </>
       )}
 
@@ -237,6 +292,231 @@ function UploadArea() {
         </ErrorBoundary>
       )}
     </div>
+  )
+}
+
+function ProcessedImagesPanel() {
+  const { dataset, reorderDataset, removeItem } = useUI()
+  const [selectedImage, setSelectedImage] = useState<any>(null)
+  const [loading, setLoading] = useState(false)
+  const [existingProcessedImages, setExistingProcessedImages] = useState<any[]>([])
+
+  // 过滤出已处理的图片
+  const processedImages = useMemo(() => dataset.filter(item => item.isProcessed), [dataset]);
+
+  // 加载已存在的处理后图片
+  const loadExistingProcessedImages = async () => {
+    try {
+      setLoading(true)
+      const res = await fetch('/api/processed-images')
+      if (res.ok) {
+        const data = await res.json()
+        // 为每个图片添加唯一的id字段
+        const imagesWithId = (data.images || []).map((img: any, index: number) => ({
+          ...img,
+          id: `existing-${img.filename}-${index}`,
+          isExisting: true
+        }))
+        setExistingProcessedImages(imagesWithId)
+      }
+    } catch (error) {
+      console.error('加载处理后图片失败:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadExistingProcessedImages()
+  }, [])
+
+  const updateCaption = async (filename: string, caption: string) => {
+    try {
+      console.log('更新已处理图片标签:', { filename, caption })
+      
+      // 获取当前设置，决定是否自动添加模型名称前缀
+      const { settings, modelName } = useUI.getState()
+      const autoAddPrefix = settings?.AUTO_ADD_MODEL_NAME_PREFIX
+      
+      let finalCaption = caption
+      if (autoAddPrefix && modelName && modelName.trim()) {
+        // 如果开启了自动添加前缀，且用户输入的标签不以模型名称开头，则自动添加
+        const modelNameTrimmed = modelName.trim()
+        if (!finalCaption.trim().startsWith(modelNameTrimmed)) {
+          finalCaption = `${modelNameTrimmed}, ${finalCaption.trim()}`
+        }
+      }
+      
+      // 对于已处理的图片，直接更新标签文件，不移动文件
+      const res = await fetch('/api/update-caption', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          filename, 
+          caption: finalCaption,
+          isProcessed: true,  // 标记这是已处理的图片
+          autoAddPrefix: autoAddPrefix || false,
+          modelName: modelName || ''
+        })
+      })
+      
+      console.log('API响应状态:', res.status)
+      
+      if (res.ok) {
+        const data = await res.json()
+        console.log('API响应数据:', data)
+        
+        // 更新本地状态
+        setExistingProcessedImages(prev => 
+          prev.map(img => 
+            img.filename === filename 
+              ? { ...img, caption: data.caption || finalCaption }
+              : img
+          )
+        )
+      } else {
+        const errorText = await res.text()
+        console.error('API错误响应:', errorText)
+        throw new Error(`保存失败: ${res.status} - ${errorText}`)
+      }
+    } catch (error) {
+      console.error('更新标签时发生错误:', error)
+      throw error
+    }
+  }
+
+  const handleReorder = useCallback((newOrder: any[]) => {
+    // 分离新处理的图片和已存在的图片
+    const newProcessedItems = newOrder.filter(item => !item.isExisting)
+    const existingItems = newOrder.filter(item => item.isExisting)
+    
+    // 更新dataset中的已处理图片顺序
+    if (newProcessedItems.length > 0) {
+      const unprocessedItems = useUI.getState().dataset.filter(item => !item.isProcessed)
+      reorderDataset([...unprocessedItems, ...newProcessedItems])
+    }
+    
+    // 更新已存在图片的顺序
+    setExistingProcessedImages(existingItems)
+  }, [reorderDataset])
+
+  // 合并新处理的图片和已存在的图片，避免重复，只显示有真正标签的图片
+  const allProcessedImages = useMemo(() => {
+    const processedIds = new Set(processedImages.map(img => img.id))
+    const existingWithoutDuplicates = existingProcessedImages.filter(img => !processedIds.has(img.id))
+    
+    // 为新处理的图片添加必要的属性，确保能正确显示
+    const enhancedProcessedImages = processedImages.map(img => ({
+      ...img,
+      filename: img.file ? img.file.name : img.filename,
+      path: img.path || `/workspace/processed/dataset/${img.file ? img.file.name : img.filename}`,
+      previewUrl: img.previewUrl || `/workspace/processed/dataset/${img.file ? img.file.name : img.filename}`
+    }))
+    
+    // 确保已存在的图片也有正确的filename字段
+    const enhancedExistingImages = existingWithoutDuplicates.map(img => ({
+      ...img,
+      filename: img.filename || 'unknown'  // 确保filename字段存在
+    }))
+    
+    // 只返回有真正标签内容的图片（排除只有默认序号的图片）
+    const allImages = [...enhancedProcessedImages, ...enhancedExistingImages]
+    return allImages.filter(img => {
+      if (!img.caption || img.caption.trim() === '') return false
+      
+      const caption = img.caption.trim()
+      // 检查是否是默认的序号标签（只包含文件名，没有逗号分隔的标签）
+      if (caption.includes(',') && caption.length > 20) {
+        // 有真正的标签内容（包含逗号且长度足够）
+        return true
+      } else if (!caption.startsWith('img_') && caption.length > 10) {
+        // 不是默认序号且长度足够
+        return true
+      }
+      return false
+    })
+  }, [processedImages, existingProcessedImages])
+
+  const handleRemove = useCallback(async (id: string) => {
+    const image = allProcessedImages.find(img => img.id === id)
+    if (image) {
+      // 立即从UI中移除，提升响应速度
+      if (image.isExisting) {
+        // 立即更新UI
+        setExistingProcessedImages(prev => prev.filter(img => img.id !== id))
+        
+        // 在后台异步删除文件
+        setTimeout(async () => {
+          try {
+            const res = await fetch('/api/delete-image', {
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filename: image.filename })
+            })
+            
+            if (!res.ok) {
+              console.error('删除图片失败:', await res.text())
+              // 如果删除失败，可以考虑重新添加到UI中
+            }
+          } catch (error) {
+            console.error('删除图片时发生错误:', error)
+          }
+        }, 0)
+      } else {
+        // 对于新处理的图片，使用store的removeItem
+        removeItem(id)
+      }
+    }
+  }, [allProcessedImages, removeItem])
+
+  const renderImage = useCallback((image: any) => <ProcessedImageItem image={image} />, []);
+
+  if (allProcessedImages.length === 0) {
+    return (
+      <div className="card p-6 mt-4">
+        <div className="text-center text-gray-500">
+          {loading ? '正在加载...' : '暂无处理后的图片，请先在上方上传并编辑标签'}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div className="card p-6 mt-4">
+                 <div className="flex items-center justify-between mb-4">
+           <h3 className="font-semibold">处理后的图片与标签 ({allProcessedImages.length})</h3>
+           <div className="flex items-center gap-2">
+             <button 
+               onClick={loadExistingProcessedImages}
+               className="px-3 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200"
+             >
+               刷新
+             </button>
+           </div>
+         </div>
+        
+          <VirtualImageGrid
+            images={allProcessedImages}
+            onImageClick={setSelectedImage}
+            onRemove={handleRemove}
+            onReorder={handleReorder}
+            className="max-h-80"
+            itemHeight={100}
+            renderImage={renderImage}
+          />
+      </div>
+      
+      {selectedImage && (
+        <ErrorBoundary>
+          <CaptionEditor
+            image={selectedImage}
+            onClose={() => setSelectedImage(null)}
+            onSave={updateCaption}
+          />
+        </ErrorBoundary>
+      )}
+    </>
   )
 }
 
@@ -384,243 +664,6 @@ function ParamsPanel() {
         <ProgressInfo />
       </div>
     </div>
-  )
-}
-
-function ProcessedImagesPanel() {
-  const { dataset, reorderDataset, removeItem } = useUI()
-  const [selectedImage, setSelectedImage] = useState<any>(null)
-  const [loading, setLoading] = useState(false)
-  const [existingProcessedImages, setExistingProcessedImages] = useState<any[]>([])
-
-  // 过滤出已处理的图片
-  const processedImages = dataset.filter(item => item.isProcessed)
-
-  // 加载已存在的处理后图片
-  const loadExistingProcessedImages = async () => {
-    try {
-      setLoading(true)
-      const res = await fetch('/api/processed-images')
-      if (res.ok) {
-        const data = await res.json()
-        // 为每个图片添加唯一的id字段
-        const imagesWithId = (data.images || []).map((img: any, index: number) => ({
-          ...img,
-          id: `existing-${img.filename}-${index}`,
-          isExisting: true
-        }))
-        setExistingProcessedImages(imagesWithId)
-      }
-    } catch (error) {
-      console.error('加载处理后图片失败:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    loadExistingProcessedImages()
-  }, [])
-
-  const updateCaption = async (filename: string, caption: string) => {
-    try {
-      console.log('更新已处理图片标签:', { filename, caption })
-      
-      // 获取当前设置，决定是否自动添加模型名称前缀
-      const { settings, modelName } = useUI.getState()
-      const autoAddPrefix = settings?.AUTO_ADD_MODEL_NAME_PREFIX
-      
-      let finalCaption = caption
-      if (autoAddPrefix && modelName && modelName.trim()) {
-        // 如果开启了自动添加前缀，且用户输入的标签不以模型名称开头，则自动添加
-        const modelNameTrimmed = modelName.trim()
-        if (!finalCaption.trim().startsWith(modelNameTrimmed)) {
-          finalCaption = `${modelNameTrimmed}, ${finalCaption.trim()}`
-        }
-      }
-      
-      // 对于已处理的图片，直接更新标签文件，不移动文件
-      const res = await fetch('/api/update-caption', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          filename, 
-          caption: finalCaption,
-          isProcessed: true,  // 标记这是已处理的图片
-          autoAddPrefix: autoAddPrefix || false,
-          modelName: modelName || ''
-        })
-      })
-      
-      console.log('API响应状态:', res.status)
-      
-      if (res.ok) {
-        const data = await res.json()
-        console.log('API响应数据:', data)
-        
-        // 更新本地状态
-        setExistingProcessedImages(prev => 
-          prev.map(img => 
-            img.filename === filename 
-              ? { ...img, caption: data.caption || finalCaption }
-              : img
-          )
-        )
-      } else {
-        const errorText = await res.text()
-        console.error('API错误响应:', errorText)
-        throw new Error(`保存失败: ${res.status} - ${errorText}`)
-      }
-    } catch (error) {
-      console.error('更新标签时发生错误:', error)
-      throw error
-    }
-  }
-
-  const handleReorder = (newOrder: any[]) => {
-    // 分离新处理的图片和已存在的图片
-    const newProcessedItems = newOrder.filter(item => !item.isExisting)
-    const existingItems = newOrder.filter(item => item.isExisting)
-    
-    // 更新dataset中的已处理图片顺序
-    if (newProcessedItems.length > 0) {
-      const unprocessedItems = dataset.filter(item => !item.isProcessed)
-      reorderDataset([...unprocessedItems, ...newProcessedItems])
-    }
-    
-    // 更新已存在图片的顺序
-    setExistingProcessedImages(existingItems)
-  }
-
-  // 合并新处理的图片和已存在的图片，避免重复，只显示有真正标签的图片
-  const allProcessedImages = useMemo(() => {
-    const processedIds = new Set(processedImages.map(img => img.id))
-    const existingWithoutDuplicates = existingProcessedImages.filter(img => !processedIds.has(img.id))
-    
-    // 为新处理的图片添加必要的属性，确保能正确显示
-    const enhancedProcessedImages = processedImages.map(img => ({
-      ...img,
-      filename: img.file ? img.file.name : img.filename,
-      path: img.path || `/workspace/processed/dataset/${img.file ? img.file.name : img.filename}`,
-      previewUrl: img.previewUrl || `/workspace/processed/dataset/${img.file ? img.file.name : img.filename}`
-    }))
-    
-    // 确保已存在的图片也有正确的filename字段
-    const enhancedExistingImages = existingWithoutDuplicates.map(img => ({
-      ...img,
-      filename: img.filename || 'unknown'  // 确保filename字段存在
-    }))
-    
-    // 只返回有真正标签内容的图片（排除只有默认序号的图片）
-    const allImages = [...enhancedProcessedImages, ...enhancedExistingImages]
-    return allImages.filter(img => {
-      if (!img.caption || img.caption.trim() === '') return false
-      
-      const caption = img.caption.trim()
-      // 检查是否是默认的序号标签（只包含文件名，没有逗号分隔的标签）
-      if (caption.includes(',') && caption.length > 20) {
-        // 有真正的标签内容（包含逗号且长度足够）
-        return true
-      } else if (!caption.startsWith('img_') && caption.length > 10) {
-        // 不是默认序号且长度足够
-        return true
-      }
-      return false
-    })
-  }, [processedImages, existingProcessedImages])
-
-  if (allProcessedImages.length === 0) {
-    return (
-      <div className="card p-6 mt-4">
-        <div className="text-center text-gray-500">
-          {loading ? '正在加载...' : '暂无处理后的图片，请先在上方上传并编辑标签'}
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <>
-      <div className="card p-6 mt-4">
-                 <div className="flex items-center justify-between mb-4">
-           <h3 className="font-semibold">处理后的图片与标签 ({allProcessedImages.length})</h3>
-           <div className="flex items-center gap-2">
-             <span className="text-xs text-blue-500">拖拽可调整顺序</span>
-             <button 
-               onClick={loadExistingProcessedImages}
-               className="px-3 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200"
-             >
-               刷新
-             </button>
-           </div>
-         </div>
-        
-                                   <VirtualImageGrid
-                    images={allProcessedImages}
-                    onImageClick={setSelectedImage}
-                    onRemove={async (id) => {
-                      const image = allProcessedImages.find(img => img.id === id)
-                      if (image) {
-                        // 立即从UI中移除，提升响应速度
-                        if (image.isExisting) {
-                          // 立即更新UI
-                          setExistingProcessedImages(prev => prev.filter(img => img.id !== id))
-                          
-                          // 在后台异步删除文件
-                          setTimeout(async () => {
-                            try {
-                              const res = await fetch('/api/delete-image', {
-                                method: 'DELETE',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ filename: image.filename })
-                              })
-                              
-                              if (!res.ok) {
-                                console.error('删除图片失败:', await res.text())
-                                // 如果删除失败，可以考虑重新添加到UI中
-                              }
-                            } catch (error) {
-                              console.error('删除图片时发生错误:', error)
-                            }
-                          }, 0)
-                        } else {
-                          // 对于新处理的图片，使用store的removeItem
-                          removeItem(id)
-                        }
-                      }
-                    }}
-                    onReorder={handleReorder}
-                    className="max-h-80"
-                    itemHeight={100}
-                                          renderImage={(image) => (
-                        <div className="relative">
-                          <LazyImage 
-                            src={image.previewUrl || `http://127.0.0.1:8000${image.path}`}
-                            alt={image.file?.name || image.filename}
-                            className="w-full h-24 rounded-lg border hover:border-blue-400 transition-colors"
-                            loading="lazy"
-                          />
-                          <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-lg transition-all flex items-center justify-center">
-                            <span className="text-white text-xs opacity-0 group-hover:opacity-100">点击编辑标签</span>
-                          </div>
-                          <div className="text-xs text-gray-600 mt-2 mb-1 truncate" title={image.caption}>
-                            {image.caption || '无标签'}
-                          </div>
-                        </div>
-                      )}
-                  />
-      </div>
-      
-      {selectedImage && (
-        <ErrorBoundary>
-          <CaptionEditor
-            image={selectedImage}
-            onClose={() => setSelectedImage(null)}
-            onSave={updateCaption}
-          />
-        </ErrorBoundary>
-      )}
-    </>
   )
 }
 
@@ -773,10 +816,6 @@ export default function App() {
         const json = await res.json()
         if (json && typeof json === 'object') {
           setSettings(json)
-          // 应用设置中的默认断点续训
-          if (typeof json.DEFAULT_AUTO_RESUME === 'boolean') {
-            set({ autoResume: json.DEFAULT_AUTO_RESUME })
-          }
         }
       } catch (e) {
         // ignore
@@ -818,8 +857,8 @@ export default function App() {
           <div className="flex items-center">
             <div className="flex-shrink-0">
               <svg className="w-4 h-4 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-              </svg>
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+            </svg>
             </div>
             <div className="ml-3 text-sm text-blue-700">✓ 已恢复上次的训练设置</div>
           </div>
@@ -850,4 +889,3 @@ export default function App() {
     </div>
   )
 }
-

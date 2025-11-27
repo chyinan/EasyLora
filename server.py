@@ -15,15 +15,17 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Optional
+import hashlib
 
 from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 import threading as _th
 import json as _json
 import os as _os
+from PIL import Image
 
 from EasyLora.config import ensure_dirs, resolve_sd_webui_lora_dir, get_settings, save_settings
 from EasyLora.data_utils import list_images, compute_avg_long_side, process_and_save
@@ -40,6 +42,9 @@ app.add_middleware(
 
 RAW_DIR = Path("workspace/raw_uploads")
 RAW_DIR.mkdir(parents=True, exist_ok=True)
+
+THUMBNAIL_DIR = Path("workspace/thumbnails")
+THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
 
 # 添加静态文件服务，让前端可以访问处理后的图片
 workspace_dir = Path("workspace")
@@ -157,6 +162,78 @@ async def get_raw_uploads():
         return {"images": images}
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.get("/api/thumbnail")
+async def get_thumbnail(path: str, width: int = 200, height: int = 200, quality: int = 80):
+    """获取图片缩略图，自动缓存"""
+    try:
+        # 解码URL参数
+        import urllib.parse
+        path = urllib.parse.unquote(path)
+        
+        # 移除开头的 /，防止绝对路径问题
+        clean_path = path.lstrip("/")
+        
+        # 确保路径安全，只允许访问 workspace 目录
+        real_path = Path(clean_path)
+        if not str(real_path).startswith("workspace"):
+            # 尝试修正路径，如果是 /workspace/xx 格式
+            if Path("workspace") in Path(clean_path).parents:
+                 pass # ok
+            else:
+                 # 如果传入的是 raw_uploads/xxx.png，前面补上 workspace/
+                 potential_path = Path("workspace") / clean_path
+                 if potential_path.exists():
+                     real_path = potential_path
+        
+        # 尝试直接从 workspace 根目录查找
+        if not real_path.exists():
+            real_path = Path(".") / clean_path
+        
+        # 最后的尝试：处理带有特殊字符的文件名，尝试从目录中查找匹配的文件
+        if not real_path.exists():
+            parent_dir = real_path.parent
+            filename = real_path.name
+            if parent_dir.exists():
+                # 遍历目录查找匹配的文件（解决编码问题）
+                for item in parent_dir.iterdir():
+                    if item.name == filename:
+                        real_path = item
+                        break
+        
+        if not real_path.exists():
+            # print(f"Thumbnail not found for: {path}, tried: {real_path.absolute()}")
+            return JSONResponse(status_code=404, content={"error": f"File not found: {path}"})
+            
+        # 生成缓存键
+        try:
+            file_stat = real_path.stat()
+            cache_key = hashlib.md5(f"{str(real_path)}_{file_stat.st_mtime}_{width}_{height}_{quality}".encode('utf-8', errors='ignore')).hexdigest()
+            cache_file = THUMBNAIL_DIR / f"{cache_key}.webp"
+            
+            if cache_file.exists():
+                return FileResponse(cache_file)
+                
+            # 生成缩略图
+            with Image.open(real_path) as img:
+                # 转换为RGB（处理RGBA png或CMYK）
+                if img.mode in ('RGBA', 'LA'):
+                    background = Image.new('RGB', img.size, (255, 255, 255))
+                    background.paste(img, mask=img.split()[-1])
+                    img = background
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                img.thumbnail((width, height))
+                img.save(cache_file, "WEBP", quality=quality)
+            return FileResponse(cache_file)
+        except Exception as e:
+            # print(f"Error generating thumbnail for {real_path}: {e}")
+            return JSONResponse(status_code=500, content={"error": f"Failed to generate thumbnail: {str(e)}"})
+            
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.get("/api/system-stats")
@@ -464,4 +541,3 @@ async def ws_train(ws: WebSocket):
 
 if __name__ == "__main__":
     uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=False)
-

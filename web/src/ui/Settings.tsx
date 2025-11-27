@@ -104,20 +104,20 @@ export default function Settings({ onClose }: Props) {
   return (
     <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
       <div className="bg-white w-[880px] max-h-[80vh] rounded-2xl shadow-xl overflow-hidden flex flex-col">
-        <div className="h-14 flex items-center justify-between px-5 border-b">
+        <div className="h-14 flex items-center justify-between px-5 border-b shrink-0">
           <div className="font-semibold">设置</div>
           <button className="p-2 hover:bg-gray-100 rounded-lg" onClick={onClose}>✕</button>
         </div>
         <div className="flex flex-1 overflow-hidden">
-          <div className="w-44 border-r p-3 space-y-2">
+          <div className="w-44 border-r p-3 space-y-2 shrink-0 overflow-y-auto">
             <button className={`w-full text-left px-3 py-2 rounded-lg ${tab==='paths'?'bg-gray-100':''}`} onClick={()=>setTab('paths')}>路径/导出</button>
             <button className={`w-full text-left px-3 py-2 rounded-lg ${tab==='train'?'bg-gray-100':''}`} onClick={()=>setTab('train')}>训练默认值</button>
             <button className={`w-full text-left px-3 py-2 rounded-lg ${tab==='net'?'bg-gray-100':''}`} onClick={()=>setTab('net')}>下载与网络</button>
             <button className={`w-full text-left px-3 py-2 rounded-lg ${tab==='adv'?'bg-gray-100':''}`} onClick={()=>setTab('adv')}>高级</button>
           </div>
-          <div className="flex-1 p-5 overflow-auto">
+          <div className="flex-1 p-5 overflow-y-auto">
             {tab==='paths' && (
-              <div>
+              <div className="space-y-1">
                 <Input label="导出目录" field="DEFAULT_OUTPUT_DIR" placeholder="outputs/" />
                 <Input label="文件名模式" field="OUTPUT_LORA_FILENAME" placeholder="custom_lora_{date}_{steps}.safetensors">
                   <div className="text-xs text-gray-500 mt-1">支持 {'{'}date{'}'}、{'{'}steps{'}'}、{'{'}name{'}'}</div>
@@ -133,7 +133,7 @@ export default function Settings({ onClose }: Props) {
               </div>
             )}
             {tab==='train' && (
-              <div>
+              <div className="space-y-1">
                 <Input label="学习率下限" field="LR_SLIDER_MIN" type="number" step="1e-6" placeholder="1e-5" />
                 <Input label="学习率上限" field="LR_SLIDER_MAX" type="number" step="1e-6" placeholder="1e-4" />
                 <Input label="LoRA rank 默认(512)" field="DEFAULT_RANK_512" type="number" />
@@ -153,7 +153,7 @@ export default function Settings({ onClose }: Props) {
               </div>
             )}
             {tab==='net' && (
-              <div>
+              <div className="space-y-1">
                 <Input label="HF_ENDPOINT(镜像站链接)" field="HF_ENDPOINT" placeholder="https://hf-mirror.com" />
                 <Input label="HF_HOME" field="HF_HOME" />
                 <Input label="TRANSFORMERS_CACHE" field="TRANSFORMERS_CACHE" />
@@ -164,7 +164,7 @@ export default function Settings({ onClose }: Props) {
               </div>
             )}
             {tab==='adv' && (
-              <div>
+              <div className="space-y-1">
                 <Input label="mixed_precision(fp16/bf16)" field="MIXED_PRECISION" placeholder="fp16" />
                 <Switch label="xformers" field="USE_XFORMERS" />
                 <Switch label="sdpa" field="USE_SDPA" />
@@ -187,7 +187,7 @@ export default function Settings({ onClose }: Props) {
             )}
           </div>
         </div>
-        <div className="h-14 border-t flex items-center justify-end gap-3 px-6">
+        <div className="h-14 border-t flex items-center justify-end gap-3 px-6 shrink-0 bg-white">
           <button className="btn-compact hover:bg-gray-100" onClick={onClose}>取消</button>
           <button className="btn-primary btn-compact ml-1" onClick={save}>保存</button>
         </div>

@@ -63,10 +63,10 @@ export const useUI = create<UIState>()(
       eta: '--:--',
       stepText: '闲置',
       logs: [],
-             dataset: [],
-       settingsOpen: false,
-       settings: null,
-       sortOption: 'custom',
+      dataset: [],
+      settingsOpen: false,
+      settings: null,
+      sortOption: 'custom',
 
       set: (partial) => set(partial),
       addLog: (line) => set({ logs: [...get().logs, line].slice(-500) }),
@@ -181,7 +181,15 @@ export const useUI = create<UIState>()(
         set({ dataset: [] })
       },
       resetProgress: () => set({ progress: 0, eta: '--:--', stepText: '闲置' }),
-      setSettings: (s) => set({ settings: s }),
+      setSettings: (s) => {
+        // 仅更新配置，不覆盖 autoResume 等用户手动修改的状态
+        set((state) => ({
+          settings: s,
+          // 如果用户从未手动切换过 autoResume（比如初次加载），才应用默认配置
+          // 但这里我们无法知道用户是否手动切换过，所以更安全的做法是只在初始化时应用一次
+          // 或者完全不覆盖，只相信本地存储的状态
+        }))
+      },
       cleanupPreviewUrls: () => {
         // 清理所有预览URL的辅助方法
         get().dataset.forEach(item => {
@@ -224,8 +232,8 @@ export const useUI = create<UIState>()(
               set({
                 dataset: currentDataset.map(item => 
                   item.id === existingItem.id 
-                    ? { ...item, caption: existingImage.caption, isProcessed: true }
-                    : item
+                  ? { ...item, caption: existingImage.caption, isProcessed: true }
+                  : item
                 )
               })
             }
@@ -279,7 +287,7 @@ export const useUI = create<UIState>()(
       name: 'easylora-settings', // 本地存储的key名称
       partialize: (state) => ({
         // 只保存用户设置，不保存临时状态
-                 modelName: state.modelName,
+         modelName: state.modelName,
          baseModel: state.baseModel,
          learningRate: state.learningRate,
          trainSteps: state.trainSteps,
@@ -290,4 +298,3 @@ export const useUI = create<UIState>()(
     }
   )
 )
-

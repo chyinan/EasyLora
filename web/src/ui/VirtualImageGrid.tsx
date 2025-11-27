@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 
 interface VirtualImageGridProps {
@@ -13,7 +13,57 @@ interface VirtualImageGridProps {
   columns?: number
 }
 
-export default function VirtualImageGrid({
+// Memoized Item Component to prevent unnecessary re-renders
+const GridItem = React.memo(({ 
+  image, 
+  width, 
+  isDragging, 
+  isDragTarget, 
+  onDragStart, 
+  onDragEnd, 
+  onDragOver, 
+  onClick, 
+  onRemove, 
+  renderImage 
+}: any) => {
+  return (
+    <div
+      className={`relative group ${isDragging ? 'opacity-50' : ''} ${isDragTarget ? 'ring-2 ring-blue-500' : ''}`}
+      style={{ width }}
+      draggable={!!onDragStart}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDragOver={onDragOver}
+      onClick={onClick}
+    >
+      {renderImage(image)}
+      
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          onRemove(image.id)
+        }}
+        className="absolute top-1 right-1 w-6 h-6 bg-red-500 text-white rounded-full text-xs hover:bg-red-600 transition-all opacity-0 group-hover:opacity-100 flex items-center justify-center z-20"
+        title="删除"
+      >
+        ×
+      </button>
+    </div>
+  )
+}, (prev, next) => {
+  return (
+    prev.image === next.image &&
+    prev.width === next.width &&
+    prev.isDragging === next.isDragging &&
+    prev.isDragTarget === next.isDragTarget &&
+    // We assume functions are stable or we don't care if they change for render purposes unless other props change
+    // Ideally parent ensures these are stable, but even if not, re-rendering a single item is cheap.
+    // The main saving is not re-rendering ALL items.
+    true
+  )
+})
+
+export default React.memo(function VirtualImageGrid({
   images,
   onImageClick,
   onRemove,
@@ -37,86 +87,65 @@ export default function VirtualImageGrid({
     targetIndex: null
   })
 
-  // 动态计算列数和项目宽度
+  // Dynamic layout calculation
   const [containerWidth, setContainerWidth] = useState(0)
-  const [dynamicColumns, setDynamicColumns] = useState(columns)
-  const [dynamicItemWidth, setDynamicItemWidth] = useState(itemWidth)
+  const [layout, setLayout] = useState({ columns, itemWidth })
 
-  // 监听容器宽度变化
   useEffect(() => {
-    const updateDimensions = () => {
-      if (parentRef.current) {
-        const width = parentRef.current.clientWidth
+    if (!parentRef.current) return
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const width = entry.contentRect.width
+        if (width === 0) return
+        
         setContainerWidth(width)
         
-        // 根据容器宽度动态计算列数
-        const gap = 8 // 间距
-        const minItemWidth = 80 // 最小项目宽度
-        const maxItemWidth = 150 // 最大项目宽度
+        const gap = 8
+        const minItemWidth = 120 // Slightly larger minimum
+        const maxItemWidth = 200
         
-        // 计算最佳列数
-        let bestColumns = Math.floor(width / (minItemWidth + gap))
-        bestColumns = Math.max(1, Math.min(bestColumns, 8)) // 限制在1-8列之间
+        let bestColumns = Math.floor((width + gap) / (minItemWidth + gap))
+        bestColumns = Math.max(2, Math.min(bestColumns, 12)) // Min 2 cols, Max 12
         
-        // 计算项目宽度
-        const itemWidth = Math.max(minItemWidth, Math.min(maxItemWidth, (width - (bestColumns - 1) * gap) / bestColumns))
+        // Calculate item width to fill space
+        const newItemWidth = (width - (bestColumns - 1) * gap) / bestColumns
         
-        setDynamicColumns(bestColumns)
-        setDynamicItemWidth(itemWidth)
+        setLayout({ columns: bestColumns, itemWidth: newItemWidth })
       }
-    }
+    })
 
-    updateDimensions()
-    
-    // 监听窗口大小变化
-    const resizeObserver = new ResizeObserver(updateDimensions)
-    if (parentRef.current) {
-      resizeObserver.observe(parentRef.current)
-    }
+    observer.observe(parentRef.current)
+    return () => observer.disconnect()
+  }, [])
 
-    return () => {
-      resizeObserver.disconnect()
-    }
-  }, [columns, itemWidth])
-
-  // 计算行数
+  const { columns: dynamicColumns, itemWidth: dynamicItemWidth } = layout
   const rows = Math.ceil(images.length / dynamicColumns)
-  
-  // 计算实际的行高度（包含图片、标签和间距）
-  const actualRowHeight = itemHeight + 40 + 16 // itemHeight + 标签高度(40px) + 行间距(16px)
-  
-  // 创建虚拟化器
+  const actualRowHeight = itemHeight + 40 + 16 // Heuristic height
+
   const rowVirtualizer = useVirtualizer({
     count: rows,
     getScrollElement: () => parentRef.current,
     estimateSize: () => actualRowHeight,
-    overscan: 2, // 预加载的行数
+    overscan: 3,
   })
 
-  // 拖拽开始
   const handleDragStart = useCallback((e: React.DragEvent, index: number) => {
     if (!onReorder) return
-    
     setDragState({
       isDragging: true,
       draggedId: images[index].id,
       draggedIndex: index,
       targetIndex: index
     })
-    
     e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/html', '') // 必须设置数据才能开始拖拽
+    // Use a transparent image or keeping the default ghost
+    // e.dataTransfer.setDragImage(e.target as Element, 0, 0)
   }, [images, onReorder])
 
-  // 拖拽结束
   const handleDragEnd = useCallback(() => {
     if (!onReorder || !dragState.isDragging || dragState.draggedIndex === null || dragState.targetIndex === null) {
-      setDragState({
-        isDragging: false,
-        draggedId: null,
-        draggedIndex: null,
-        targetIndex: null
-      })
+      setDragState(prev => ({ ...prev, isDragging: false, draggedId: null, draggedIndex: null, targetIndex: null }))
       return
     }
 
@@ -134,78 +163,18 @@ export default function VirtualImageGrid({
     })
   }, [dragState, images, onReorder])
 
-  // 拖拽悬停
   const handleDragOver = useCallback((e: React.DragEvent, index: number) => {
     e.preventDefault()
-    if (dragState.isDragging && dragState.draggedIndex !== null) {
+    if (dragState.isDragging && dragState.draggedIndex !== null && dragState.targetIndex !== index) {
       setDragState(prev => ({ ...prev, targetIndex: index }))
     }
   }, [dragState])
-
-  // 渲染单行图片
-  const renderRow = useCallback((rowIndex: number) => {
-    const startIndex = rowIndex * dynamicColumns
-    const endIndex = Math.min(startIndex + dynamicColumns, images.length)
-    const rowImages = images.slice(startIndex, endIndex)
-
-    return (
-              <div
-          key={rowIndex}
-          className="flex gap-2 mb-4"
-          style={{
-            height: itemHeight,
-          }}
-        >
-          {rowImages.map((image, colIndex) => {
-            const globalIndex = startIndex + colIndex
-            const isDragging = dragState.draggedId === image.id
-            const isDragTarget = dragState.targetIndex === globalIndex
-            
-                         return (
-               <div
-                 key={image.id}
-                 className={`relative group ${isDragging ? 'opacity-50' : ''} ${isDragTarget ? 'ring-2 ring-blue-500' : ''}`}
-                 style={{ width: dynamicItemWidth }}
-                 draggable={!!onReorder}
-                 onDragStart={(e) => handleDragStart(e, globalIndex)}
-                 onDragEnd={handleDragEnd}
-                 onDragOver={(e) => handleDragOver(e, globalIndex)}
-                 onClick={() => onImageClick(image)}
-               >
-              {renderImage(image)}
-              
-                             {/* 删除按钮 */}
-               <button
-                 onClick={(e) => {
-                   e.stopPropagation()
-                   onRemove(image.id)
-                 }}
-                 className="absolute top-1 right-1 w-6 h-6 bg-red-500 text-white rounded-full text-xs hover:bg-red-600 transition-all opacity-0 group-hover:opacity-100"
-                 title="删除"
-               >
-                 ×
-               </button>
-            </div>
-          )
-        })}
-        
-        {/* 填充空列以保持对齐 */}
-        {Array.from({ length: dynamicColumns - rowImages.length }).map((_, colIndex) => (
-          <div
-            key={`empty-${rowIndex}-${colIndex}`}
-            style={{ width: dynamicItemWidth }}
-            className="flex-shrink-0"
-          />
-        ))}
-      </div>
-    )
-  }, [images, dynamicColumns, itemHeight, dynamicItemWidth, actualRowHeight, dragState, onReorder, onImageClick, onRemove, renderImage, handleDragStart, handleDragEnd, handleDragOver])
 
   return (
     <div
       ref={parentRef}
       className={`overflow-auto ${className}`}
-      style={{ height: '100%' }}
+      style={{ height: '100%', minHeight: '200px' }}
     >
       <div
         style={{
@@ -214,22 +183,45 @@ export default function VirtualImageGrid({
           position: 'relative',
         }}
       >
-        {rowVirtualizer.getVirtualItems().map((virtualRow) => (
-          <div
-            key={virtualRow.key}
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: '100%',
-              height: `${virtualRow.size}px`,
-              transform: `translateY(${virtualRow.start}px)`,
-            }}
-          >
-            {renderRow(virtualRow.index)}
-          </div>
-        ))}
+        {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+          const startIndex = virtualRow.index * dynamicColumns
+          const endIndex = Math.min(startIndex + dynamicColumns, images.length)
+          const rowImages = images.slice(startIndex, endIndex)
+
+          return (
+            <div
+              key={virtualRow.key}
+              className="flex gap-2 absolute top-0 left-0 w-full"
+              style={{
+                height: actualRowHeight,
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+            >
+              {rowImages.map((image, colIndex) => {
+                const globalIndex = startIndex + colIndex
+                const isDragging = dragState.draggedId === image.id
+                const isDragTarget = dragState.targetIndex === globalIndex
+
+                return (
+                  <GridItem
+                    key={image.id || globalIndex}
+                    image={image}
+                    width={dynamicItemWidth}
+                    isDragging={isDragging}
+                    isDragTarget={isDragTarget}
+                    onDragStart={onReorder ? (e: any) => handleDragStart(e, globalIndex) : undefined}
+                    onDragEnd={onReorder ? handleDragEnd : undefined}
+                    onDragOver={onReorder ? (e: any) => handleDragOver(e, globalIndex) : undefined}
+                    onClick={() => onImageClick(image)}
+                    onRemove={onRemove}
+                    renderImage={renderImage}
+                  />
+                )
+              })}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
-} 
+})

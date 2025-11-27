@@ -26,21 +26,31 @@ Thumbs.db
 .hf/
 huggingface/
 .cache/
+TRANSFORMERS_CACHE/
 
-# Project data & outputs
-outputs/
-workspace/processed/
-workspace/raw_uploads/
-workspace/captions/
-user_settings.json
-
-# Large model artifacts
+# Models directory (large files)
+models/
 *.safetensors
 *.bin
 *.pt
 *.pth
 *.npz
 *.ckpt
+*.onnx
+*.pb
+
+# Project data & outputs
+outputs/
+outputs/_bootstrap/
+outputs/temp_dataset/
+workspace/
+workspace/processed/
+workspace/raw_uploads/
+workspace/captions/
+workspace/thumbnails/
+workspace/temp/
+workspace/temp_images/
+user_settings.json
 
 # Node / Web artifacts
 web/node_modules/
@@ -51,4 +61,15 @@ web/coverage/
 web/test-results/
 web/playwright-report/
 web/.eslintcache
+web/tsconfig.tsbuildinfo
 
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~

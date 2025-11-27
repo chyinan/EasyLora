@@ -42,6 +42,7 @@ from .config import (
     get_settings,
     format_output_filename,
 )
+from .data_utils import is_valid_caption
 
 
 def filter_images_with_captions(dataset_dir: Path) -> List[Path]:
@@ -59,14 +60,8 @@ def filter_images_with_captions(dataset_dir: Path) -> List[Path]:
                 try:
                     # 检查标签文件是否有内容
                     caption_content = caption_file.read_text(encoding="utf-8").strip()
-                    if caption_content:
-                        # 检查是否是默认的序号标签（只包含文件名，没有逗号分隔的标签）
-                        if "," in caption_content and len(caption_content) > 20:
-                            # 有真正的标签内容（包含逗号且长度足够）
-                            images_with_captions.append(img_file)
-                        elif not caption_content.startswith("img_") and len(caption_content) > 10:
-                            # 不是默认序号且长度足够
-                            images_with_captions.append(img_file)
+                    if is_valid_caption(caption_content):
+                        images_with_captions.append(img_file)
                 except Exception:
                     # 如果读取失败，跳过这个文件
                     continue
@@ -454,15 +449,24 @@ def _run_kohya_training(kohya_train_py: Path, params: AutoTrainParams, train_dir
         
         # 创建临时数据集目录，只包含有标签的图片
         temp_dataset_dir = output_dir / "temp_dataset"
+        # 如果存在先清理，确保没有旧数据干扰
+        try:
+            if temp_dataset_dir.exists():
+                shutil.rmtree(temp_dataset_dir)
+        except Exception:
+            pass
         temp_dataset_dir.mkdir(exist_ok=True)
         
         # 复制有标签的图片和对应的标签文件到临时目录
         for img_path in images_with_captions:
             caption_path = img_path.with_suffix(".txt")
-            # 复制图片
-            shutil.copy2(img_path, temp_dataset_dir / img_path.name)
-            # 复制标签文件
-            shutil.copy2(caption_path, temp_dataset_dir / caption_path.name)
+            try:
+                # 复制图片
+                shutil.copy2(img_path, temp_dataset_dir / img_path.name)
+                # 复制标签文件
+                shutil.copy2(caption_path, temp_dataset_dir / caption_path.name)
+            except Exception:
+                pass
         
         image_dir_abs = temp_dataset_dir
         callbacks.log(f"已创建临时数据集目录，包含 {len(images_with_captions)} 张图片")
@@ -1113,7 +1117,6 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
                 proc.kill()
             except Exception:
                 pass
-                pass
             try:
                 proc.terminate()
             except Exception:
@@ -1156,4 +1159,3 @@ def _kohya_supports_sdxl(kohya_train_py: Path) -> bool:
         return "--sdxl" in help_text
     except Exception:
         return False
-

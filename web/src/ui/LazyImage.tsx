@@ -1,17 +1,15 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react'
+import React, { useState, useEffect } from 'react'
 
-interface LazyImageProps {
+interface LazyImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   src: string
   alt?: string
   className?: string
   placeholder?: string
-  onLoad?: () => void
-  onError?: () => void
-  loading?: 'lazy' | 'eager'
-  [key: string]: any
+  onLoad?: (e: React.SyntheticEvent<HTMLImageElement, Event>) => void
+  onError?: (e: React.SyntheticEvent<HTMLImageElement, Event>) => void
 }
 
-export default function LazyImage({
+export default React.memo(function LazyImage({
   src,
   alt = '',
   className = '',
@@ -22,111 +20,49 @@ export default function LazyImage({
   ...props
 }: LazyImageProps) {
   const [isLoaded, setIsLoaded] = useState(false)
-  const [isInView, setIsInView] = useState(false)
   const [hasError, setHasError] = useState(false)
-  const imgRef = useRef<HTMLImageElement>(null)
-  const observerRef = useRef<IntersectionObserver | null>(null)
 
-  // 图片加载完成
-  const handleLoad = useCallback(() => {
-    setIsLoaded(true)
-    setHasError(false)
-    onLoad?.()
-  }, [onLoad])
-
-  // 图片加载失败
-  const handleError = useCallback(() => {
-    setHasError(true)
+  // Reset state when src changes
+  useEffect(() => {
     setIsLoaded(false)
-    onError?.()
-  }, [onError])
+    setHasError(false)
+  }, [src])
 
-  // 设置交叉观察器
-  useEffect(() => {
-    if (loading === 'eager') {
-      setIsInView(true)
-      return
-    }
+  const handleLoad = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+    setIsLoaded(true)
+    onLoad?.(e)
+  }
 
-    if (!imgRef.current) return
-
-    observerRef.current = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            setIsInView(true)
-            // 一旦进入视口就停止观察
-            if (observerRef.current) {
-              observerRef.current.disconnect()
-            }
-          }
-        })
-      },
-      {
-        rootMargin: '50px', // 提前50px开始加载
-        threshold: 0.1
-      }
-    )
-
-    observerRef.current.observe(imgRef.current)
-
-    return () => {
-      if (observerRef.current) {
-        observerRef.current.disconnect()
-      }
-    }
-  }, [loading])
-
-  // 当图片进入视口时开始加载
-  useEffect(() => {
-    if (isInView && imgRef.current) {
-      const img = imgRef.current
-      
-      // 如果图片还没有src，设置src开始加载
-      if (!img.src || img.src === placeholder) {
-        img.src = src
-      }
-    }
-  }, [isInView, src, placeholder])
+  const handleError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+    setHasError(true)
+    onError?.(e)
+  }
 
   return (
     <div className={`relative overflow-hidden ${className}`}>
-      {/* 占位符 */}
-      {!isLoaded && !hasError && (
-        <img
-          src={placeholder}
-          alt=""
-          className="absolute inset-0 w-full h-full object-cover"
-          style={{ filter: 'blur(1px)' }}
-        />
-      )}
-      
-      {/* 加载中指示器 */}
-      {!isLoaded && !hasError && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gray-100">
-          <div className="w-6 h-6 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin"></div>
+      {/* Placeholder / Loading State */}
+      {(!isLoaded || hasError) && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-100 z-10">
+          {!hasError ? (
+            <div className="w-6 h-6 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin"></div>
+          ) : (
+             <div className="text-gray-400 text-xs">加载失败</div>
+          )}
         </div>
       )}
       
-      {/* 错误状态 */}
-      {hasError && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gray-100 text-gray-400 text-xs">
-          加载失败
-        </div>
-      )}
-      
-      {/* 实际图片 */}
+      {/* Actual Image */}
       <img
-        ref={imgRef}
-        src={isInView ? src : placeholder}
+        src={src}
         alt={alt}
         className={`w-full h-full object-cover transition-opacity duration-300 ${
           isLoaded ? 'opacity-100' : 'opacity-0'
         }`}
+        loading={loading}
         onLoad={handleLoad}
         onError={handleError}
         {...props}
       />
     </div>
   )
-} 
+})
