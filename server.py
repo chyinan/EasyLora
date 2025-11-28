@@ -27,7 +27,7 @@ import json as _json
 import os as _os
 from PIL import Image
 
-from EasyLora.config import ensure_dirs, resolve_sd_webui_lora_dir, get_settings, save_settings
+from EasyLora.config import ensure_dirs, resolve_sd_webui_lora_dir, get_settings, save_settings, DEFAULT_PROCESSED_DIR, DEFAULT_CAPTIONS_DIR
 from EasyLora.data_utils import list_images, compute_avg_long_side, process_and_save
 from EasyLora.train import train_lora, TrainCallbacks
 
@@ -481,15 +481,34 @@ async def ws_train(ws: WebSocket):
     try:
         ensure_dirs()
         images = list_images(RAW_DIR)
+        using_processed = False
+        
         if not images:
-            await ws.send_json({"type": "error", "error": "没有已上传的图片"})
-            await ws.close()
-            return
+            # 检查是否有现成的处理后图片（允许用户不上传原图直接训练）
+            processed_dataset_dir = DEFAULT_PROCESSED_DIR / "dataset"
+            processed_images = list_images(processed_dataset_dir)
+            
+            if processed_images:
+                await ws.send_json({"type": "log", "data": f"未检测到新上传图片，将使用现有 {len(processed_images)} 张处理后图片..."})
+                images = processed_images
+                using_processed = True
+            else:
+                await ws.send_json({"type": "error", "error": "没有已上传的图片，也没有找到已处理的图片"})
+                await ws.close()
+                return
 
         s = get_settings()
+        # 如果直接使用处理后的图片，通常已经是 512 或 768，直接计算即可
         avg_long = compute_avg_long_side(images)
         th = int(s.get("RES_THRESHOLD_768", 700))
-        processed_dir, captions_dir, saved_images = process_and_save(images, target_size=512 if avg_long < th else 768, augment_factor=int(s.get("AUGMENT_FACTOR", 1)))
+
+        if using_processed:
+            # 跳过处理步骤，直接设定路径
+            processed_dir = DEFAULT_PROCESSED_DIR
+            captions_dir = DEFAULT_CAPTIONS_DIR
+            saved_images = images
+        else:
+            processed_dir, captions_dir, saved_images = process_and_save(images, target_size=512 if avg_long < th else 768, augment_factor=int(s.get("AUGMENT_FACTOR", 1)))
 
         # 从查询串读取可选参数（steps, lr, name）
         try:
@@ -501,8 +520,13 @@ async def ws_train(ws: WebSocket):
             save_every = int(q.get("save_every", str(int(s.get("DEFAULT_SAVE_EVERY", 0)))))
             auto_resume = (q.get("auto_resume") == '1') if q.get("auto_resume") is not None else bool(s.get("DEFAULT_AUTO_RESUME", False))
             model_name = q.get("name") or None
+            
+            optimizer_type = q.get("optimizer_type") or None
+            unet_lr = float(q.get("unet_lr", "0")) if q.get("unet_lr") else None
+            text_encoder_lr = float(q.get("text_encoder_lr", "0")) if q.get("text_encoder_lr") else None
         except Exception:
             ov_steps, ov_lr, save_every, auto_resume, model_name = None, None, int(get_settings().get("DEFAULT_SAVE_EVERY", 0)), bool(get_settings().get("DEFAULT_AUTO_RESUME", False)), None
+            optimizer_type, unet_lr, text_encoder_lr = None, None, None
 
         # 在线程池运行阻塞训练，保持 WebSocket 心跳与消息发送
         # 在子进程环境中注入模型名称，以便命名 {name}_{steps}
@@ -526,6 +550,9 @@ async def ws_train(ws: WebSocket):
                 override_lr=ov_lr,
                 override_save_every=save_every,
                 override_auto_resume=auto_resume,
+                optimizer_type=optimizer_type,
+                unet_lr=unet_lr,
+                text_encoder_lr=text_encoder_lr,
                 stop_event=_STOP_EVENT,
             ),
         )

@@ -131,6 +131,9 @@ def train_lora(
     override_save_every: Optional[int] = None,
     override_save_state: Optional[bool] = None,
     override_auto_resume: Optional[bool] = None,
+    optimizer_type: Optional[str] = None,
+    unet_lr: Optional[float] = None,
+    text_encoder_lr: Optional[float] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> Path:
     """执行 LoRA 训练并返回生成的 .safetensors 路径。
@@ -198,6 +201,7 @@ def train_lora(
         out_file = _run_kohya_training(
             kohya_path, params, processed_dir, callbacks,
             save_every_steps=save_every, save_state=save_state_flag, auto_resume=auto_resume_flag,
+            optimizer_type=optimizer_type, unet_lr=unet_lr, text_encoder_lr=text_encoder_lr,
             stop_event=stop_event,
         )
         # 复制到 SD WebUI LoRA 目录
@@ -339,6 +343,7 @@ def _mirror_captions_next_to_images(processed_dir: Path, captions_dir: Path, ima
 
 def _run_kohya_training(kohya_train_py: Path, params: AutoTrainParams, train_dir: Path, callbacks: TrainCallbacks,
                         save_every_steps: int = 0, save_state: bool = False, auto_resume: bool = False,
+                        optimizer_type: Optional[str] = None, unet_lr: Optional[float] = None, text_encoder_lr: Optional[float] = None,
                         stop_event: Optional[threading.Event] = None) -> Path:
     # 显存自适应：低显存时自动降分辨率并启用省显存开关
     low_vram_mode = False
@@ -564,16 +569,30 @@ def _run_kohya_training(kohya_train_py: Path, params: AutoTrainParams, train_dir
         # note: some sd-scripts versions don't support logging flags; omit to keep compatibility
     ]
 
+    # 优化器与自定义学习率
+    if optimizer_type:
+        cmd += ["--optimizer_type", str(optimizer_type)]
+        callbacks.log(f"使用优化器: {optimizer_type}")
+        # 避免 DAdaptation/Lion 等与 --use_8bit_adam 冲突（除非用户强行需要 8bit Lion，但 sd-scripts 逻辑较杂，这里保守仅在默认时开启 8bit adam）
+    else:
+        # 使用 8bit Adam（若 sd-scripts 支持）降低显存
+        try:
+            if bool(s.get('USE_8BIT_ADAM', True)):
+                cmd += ["--use_8bit_adam"]
+        except Exception:
+            pass
+
+    if unet_lr is not None:
+        cmd += ["--unet_lr", str(unet_lr)]
+        callbacks.log(f"UNet LR: {unet_lr}")
+    
+    if text_encoder_lr is not None:
+        cmd += ["--text_encoder_lr", str(text_encoder_lr)]
+        callbacks.log(f"Text Encoder LR: {text_encoder_lr}")
+
     # 预缓存 latents 以降低训练时 VAE 参与与显存占用
     try:
         cmd += ["--cache_latents", "--vae_batch_size", "1"]
-    except Exception:
-        pass
-
-    # 使用 8bit Adam（若 sd-scripts 支持）降低显存
-    try:
-        if bool(s.get('USE_8BIT_ADAM', True)):
-            cmd += ["--use_8bit_adam"]
     except Exception:
         pass
 
@@ -695,12 +714,46 @@ def _run_kohya_training(kohya_train_py: Path, params: AutoTrainParams, train_dir
     
     # 准备子进程环境变量
     env = os.environ.copy()
+    
+    # 显式设置关键环境变量，确保子进程继承
     env['HF_HOME'] = str(Path("D:/Program/EasyLora/.hf").resolve())
     env['TRANSFORMERS_CACHE'] = str(Path("D:/Program/EasyLora/.hf/hub").resolve())
     env['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:64'
     env['CUDA_MODULE_LOADING'] = 'LAZY'
     env['PYTHONUNBUFFERED'] = '1'
+    # 显式禁用 HF_TRANSFER 以避免 os error 32
+    env['HF_HUB_ENABLE_HF_TRANSFER'] = '0'
     
+    # 设置系统 HTTP/HTTPS 代理（如果系统有配置，Python 的 subprocess 通常会继承，
+    # 但显式设置更稳妥，特别是对于 diffusers/huggingface_hub）
+    # 若用户未在 EasyLora 设置中配置代理，则尝试读取系统环境变量
+    if 'HTTP_PROXY' not in env and os.environ.get('HTTP_PROXY'):
+        env['HTTP_PROXY'] = os.environ['HTTP_PROXY']
+    if 'HTTPS_PROXY' not in env and os.environ.get('HTTPS_PROXY'):
+        env['HTTPS_PROXY'] = os.environ['HTTPS_PROXY']
+    if 'http_proxy' not in env and os.environ.get('http_proxy'):
+        env['http_proxy'] = os.environ['http_proxy']
+    if 'https_proxy' not in env and os.environ.get('https_proxy'):
+        env['https_proxy'] = os.environ['https_proxy']
+
+    # 打印网络配置信息，帮助用户排查
+    callbacks.log("--- 网络环境配置 ---")
+    hf_endpoint = env.get('HF_ENDPOINT', os.environ.get('HF_ENDPOINT', 'https://huggingface.co'))
+    callbacks.log(f"HF_ENDPOINT: {hf_endpoint}")
+    
+    proxy_str = []
+    for k in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']:
+        if env.get(k):
+            proxy_str.append(f"{k}={env[k]}")
+    if proxy_str:
+        callbacks.log(f"Proxy: {', '.join(proxy_str)}")
+    else:
+        callbacks.log("Proxy: 未检测到代理设置")
+        
+    if "hf-mirror" in str(hf_endpoint) and proxy_str:
+        callbacks.log("提示: 检测到同时使用了 hf-mirror 和代理。如果下载卡顿，建议清除 HF_ENDPOINT 使用官方源配合代理，或者关闭代理仅使用镜像。")
+    callbacks.log("--------------------")
+
     # 为旧版 accelerate 注入兼容补丁：提供缺失的 clear_device_cache，避免 peft 导入失败
     try:
         bootstrap_dir = (output_dir / "_bootstrap").resolve()
@@ -743,6 +796,15 @@ try:
             if not hasattr(m, '__path__'):
                 m.__path__ = []
 except Exception:
+    pass
+
+# PATCH: 拦截 diffusers.loaders.peft 导入错误，使其在 SDXL 训练时不再致命
+# 因为 sd-scripts 主要用自己的网络模块，而不是 diffusers 的 peft loader
+import sys
+if 'diffusers' in sys.modules:
+    pass # too late to patch easily?
+else:
+    # 我们无法轻易 patch 磁盘上的文件，但可以在运行时 mock 掉有问题的模块
     pass
 """
         # 写入补丁文件（幂等）

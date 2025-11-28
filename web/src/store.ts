@@ -23,6 +23,9 @@ interface UIState {
   trainSteps: number
   saveEverySteps: number
   autoResume: boolean
+  optimizerType: string
+  unetLr: number
+  textEncoderLr: number
   uploading: boolean
   progress: number
   eta: string
@@ -58,6 +61,9 @@ export const useUI = create<UIState>()(
       trainSteps: 1200,
       saveEverySteps: 0,
       autoResume: true,
+      optimizerType: 'AdamW8bit',
+      unetLr: 0,
+      textEncoderLr: 0,
       uploading: false,
       progress: 0,
       eta: '--:--',
@@ -293,6 +299,9 @@ export const useUI = create<UIState>()(
          trainSteps: state.trainSteps,
          saveEverySteps: state.saveEverySteps,
          autoResume: state.autoResume,
+         optimizerType: state.optimizerType,
+         unetLr: state.unetLr,
+         textEncoderLr: state.textEncoderLr,
          sortOption: state.sortOption,
       }),
     }

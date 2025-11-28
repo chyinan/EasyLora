@@ -521,7 +521,7 @@ function ProcessedImagesPanel() {
 }
 
 function ParamsPanel() {
-  const { modelName, baseModel, learningRate, trainSteps, saveEverySteps, autoResume, set, progress, eta, settings } = useUI()
+  const { modelName, baseModel, learningRate, trainSteps, saveEverySteps, autoResume, optimizerType, unetLr, textEncoderLr, set, progress, eta, settings } = useUI()
   const [showSavedTip, setShowSavedTip] = useState(false)
 
   // 检测设置变化并显示保存提示
@@ -655,6 +655,62 @@ function ParamsPanel() {
         </div>
       </div>
 
+      <div className="mb-4">
+        <div className="text-sm mb-1">优化器</div>
+        <select
+          className="w-full border rounded-xl px-3 py-2"
+          value={optimizerType || 'AdamW8bit'}
+          onChange={(e) => {
+            const val = e.target.value;
+            set({ optimizerType: val });
+            // DAdaptation 推荐默认参数
+            if (val === 'DAdaptation') {
+                const cur = useUI.getState();
+                if (!cur.unetLr && !cur.textEncoderLr) {
+                    set({ unetLr: 1.0, textEncoderLr: 0.5 });
+                }
+            }
+            showSaveTip();
+          }}
+        >
+          <option value="AdamW8bit">AdamW8bit (默认)</option>
+          <option value="DAdaptation">DAdaptation (自动LR)</option>
+          <option value="Lion">Lion</option>
+          <option value="AdamW">AdamW</option>
+        </select>
+      </div>
+
+      {(optimizerType === 'DAdaptation' || optimizerType === 'Lion' || (unetLr > 0) || (textEncoderLr > 0)) && (
+        <div className="flex gap-3 mb-4">
+          <div className="flex-1">
+            <div className="text-sm mb-1">UNet LR</div>
+            <input 
+              type="number" 
+              step={0.1} 
+              className="w-full border rounded-xl px-3 py-2" 
+              value={unetLr || 0} 
+              onChange={e => {
+                set({ unetLr: parseFloat(e.target.value) });
+                showSaveTip();
+              }} 
+            />
+          </div>
+          <div className="flex-1">
+            <div className="text-sm mb-1">TextEnc LR</div>
+            <input 
+              type="number" 
+              step={0.1} 
+              className="w-full border rounded-xl px-3 py-2" 
+              value={textEncoderLr || 0} 
+              onChange={e => {
+                set({ textEncoderLr: parseFloat(e.target.value) });
+                showSaveTip();
+              }} 
+            />
+          </div>
+        </div>
+      )}
+
       <StartTrainingButton />
 
       <div className="mt-6">
@@ -736,6 +792,17 @@ function StartTrainingButton() {
     }
     if (useUI.getState().saveEverySteps > 0) qs.set('save_every', String(useUI.getState().saveEverySteps))
     if (useUI.getState().autoResume) qs.set('auto_resume', '1')
+    
+    // 优化器与自定义LR
+    const optimizerType = useUI.getState().optimizerType;
+    if (optimizerType) qs.set('optimizer_type', optimizerType);
+    
+    const unetLr = useUI.getState().unetLr;
+    if (unetLr && unetLr > 0) qs.set('unet_lr', String(unetLr));
+    
+    const textEncoderLr = useUI.getState().textEncoderLr;
+    if (textEncoderLr && textEncoderLr > 0) qs.set('text_encoder_lr', String(textEncoderLr));
+
     // 将模型名称透传给后端（用于默认文件名 {name}_{steps}）
     qs.set('name', modelName || 'model')
     const ws = new WebSocket(`ws://127.0.0.1:8000/ws/train?${qs.toString()}`)

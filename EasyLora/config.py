@@ -149,7 +149,13 @@ def auto_params_sdxl(num_images: int) -> AutoTrainParams:
     """为 SDXL 选择默认参数（显存友好）。"""
     s = get_settings()
     image_size = 1024
-    model_id = DEFAULT_MODEL_SDXL
+    model_id = str(s.get("DEFAULT_MODEL_SDXL", DEFAULT_MODEL_SDXL))
+    # 检查模型路径是否存在，若不存在则回退到 HF ID
+    if not Path(model_id).exists():
+        # 尝试去掉 D: 前缀等（虽然 Path 应该能处理），或者只是简单检查
+        # 如果配置的是本地路径但找不到，则使用在线 ID
+        model_id = "stabilityai/stable-diffusion-xl-base-1.0"
+
     learning_rate = float(s.get("LR_SLIDER_MIN", 1e-5) + (s.get("LR_SLIDER_MAX", 1e-4) - s.get("LR_SLIDER_MIN", 1e-5)) * 0.5)
     lora_rank = int(s.get("DEFAULT_RANK_1024", 32))
     train_batch_size = int(s.get("DEFAULT_BATCH_SIZE", 1))
@@ -199,7 +205,13 @@ def auto_params_by_dataset(num_images: int, image_size: int) -> AutoTrainParams:
 
     steps_default = int(s.get("DEFAULT_STEPS_512", 1500) if image_size == 512 else s.get("DEFAULT_STEPS_768", 1200))
     steps = max(300, min(100 * max(1, num_images), 2000)) if steps_default <= 0 else steps_default
-    model_id = DEFAULT_MODEL_512 if image_size == 512 else DEFAULT_MODEL_768
+    model_id = str(DEFAULT_MODEL_512 if image_size == 512 else DEFAULT_MODEL_768)
+    # 同样检查 SD1.5/SD2.1 模型是否存在
+    if not Path(model_id).exists():
+        if image_size == 512:
+            model_id = "runwayml/stable-diffusion-v1-5"
+        else:
+            model_id = "stabilityai/stable-diffusion-2-1"
 
     return AutoTrainParams(
         image_size=image_size,
