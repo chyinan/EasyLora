@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 
 // 独立的标签按钮组件，避免渲染冲突
 const TagButton = React.memo(({ tag, isSelected, onToggle }: {
@@ -7,6 +8,7 @@ const TagButton = React.memo(({ tag, isSelected, onToggle }: {
   onToggle: (tag: string) => void
 }) => {
   const [isClicking, setIsClicking] = useState(false)
+  const { t } = useTranslation()
 
   const handleClick = useCallback(() => {
     if (isClicking) return // 防止重复点击
@@ -25,7 +27,7 @@ const TagButton = React.memo(({ tag, isSelected, onToggle }: {
           ? 'bg-blue-500 text-white hover:bg-blue-600' 
           : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
       } disabled:opacity-50`}
-      title={isSelected ? '点击移除' : '点击添加'}
+      title={isSelected ? t('ClickToRemove') : t('ClickToAdd')}
     >
       {isSelected && '✓ '}{tag}
     </button>
@@ -51,6 +53,7 @@ interface CaptionEditorProps {
 export default function CaptionEditor({ image, onClose, onSave }: CaptionEditorProps) {
   const [caption, setCaption] = useState(image.caption || '')
   const [saving, setSaving] = useState(false)
+  const { t } = useTranslation()
 
   useEffect(() => {
     setCaption(image.caption || '')
@@ -60,7 +63,7 @@ export default function CaptionEditor({ image, onClose, onSave }: CaptionEditorP
     setSaving(true)
     try {
       const filename = image.file?.name || image.filename || 'unknown'
-      console.log('CaptionEditor保存:', { 
+      console.log('CaptionEditor save:', { 
         imageFile: image.file?.name, 
         imageFilename: image.filename, 
         finalFilename: filename,
@@ -70,8 +73,8 @@ export default function CaptionEditor({ image, onClose, onSave }: CaptionEditorP
       await onSave(filename, caption)
       onClose()
     } catch (error) {
-      console.error('CaptionEditor保存失败:', error)
-      alert('保存失败: ' + error)
+      console.error('CaptionEditor save failed:', error)
+      alert(t('UpdateCaptionError') + ': ' + error)
     } finally {
       setSaving(false)
     }
@@ -120,7 +123,7 @@ export default function CaptionEditor({ image, onClose, onSave }: CaptionEditorP
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-white rounded-xl p-6 max-w-4xl w-full mx-4 max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold">编辑图片标签</h2>
+          <h2 className="text-xl font-bold">{t('EditImageTags')}</h2>
           <button 
             onClick={onClose}
             className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center"
@@ -132,19 +135,19 @@ export default function CaptionEditor({ image, onClose, onSave }: CaptionEditorP
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* 图片预览 */}
           <div className="space-y-4">
-            <div className="text-sm text-gray-600">图片预览</div>
+            <div className="text-sm text-gray-600">{t('ImagePreview')}</div>
             <img 
               src={image.previewUrl || `http://127.0.0.1:8000${image.path}`} 
-              alt={image.file?.name || image.filename || '图片'}
+              alt={image.file?.name || image.filename || t('ImagePreview')}
               className="w-full max-w-md rounded-lg border shadow-sm"
             />
-            <div className="text-sm text-gray-500">{image.file?.name || image.filename || '未知文件'}</div>
+            <div className="text-sm text-gray-500">{image.file?.name || image.filename || t('UnknownFile')}</div>
           </div>
 
           {/* 标签编辑 */}
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium mb-2">标签描述</label>
+              <label className="block text-sm font-medium mb-2">{t('CaptionDescription')}</label>
               <textarea
                 value={caption}
                 onChange={(e) => setCaption(e.target.value)}
@@ -154,13 +157,13 @@ export default function CaptionEditor({ image, onClose, onSave }: CaptionEditorP
                 autoFocus
               />
               <div className="text-xs text-gray-500 mt-1">
-                提示：使用逗号分隔标签，按 Ctrl+Enter 保存
+                {t('CaptionTip')}
               </div>
             </div>
 
             {/* 常用标签建议 */}
             <div>
-              <div className="text-sm font-medium mb-2">常用标签（点击切换）</div>
+              <div className="text-sm font-medium mb-2">{t('CommonTags')}</div>
               <div className="grid grid-cols-2 gap-1 max-h-40 overflow-auto">
                 {tagSuggestions.map((tag) => {
                   const isSelected = selectedTags.has(tag)
@@ -183,13 +186,13 @@ export default function CaptionEditor({ image, onClose, onSave }: CaptionEditorP
                 disabled={saving}
                 className="flex-1 bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 disabled:opacity-50"
               >
-                {saving ? '保存中...' : '保存标签'}
+                {saving ? t('Saving') : t('SaveTags')}
               </button>
               <button
                 onClick={onClose}
                 className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
               >
-                取消
+                {t('Cancel')}
               </button>
             </div>
           </div>

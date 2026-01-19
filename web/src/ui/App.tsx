@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
+import { useTranslation } from 'react-i18next'
 import { useUI } from '../store'
 import Settings from './Settings'
 import CaptionEditor from './CaptionEditor'
@@ -10,54 +11,87 @@ import LazyImage from './LazyImage'
 import SortOptions, { SortOption } from './SortOptions'
 import { getThumbnailUrl } from '../utils/imageCache'
 
+function LanguageToggle() {
+  const { i18n } = useTranslation()
+  const toggleLanguage = () => {
+    const nextLng = i18n.language === 'zh' ? 'en' : 'zh'
+    i18n.changeLanguage(nextLng)
+  }
+
+  return (
+    <button 
+      className="p-2 rounded-lg hover:bg-gray-100 flex items-center justify-center" 
+      title={i18n.language === 'zh' ? 'Switch to English' : '切换至中文'} 
+      onClick={toggleLanguage}
+    >
+      <img 
+        src="/trans.png" 
+        alt={i18n.language === 'zh' ? 'Switch to English' : '切换至中文'} 
+        className="w-5 h-5 object-contain" 
+        onError={(e) => {
+          console.error('Failed to load trans.png')
+          e.currentTarget.style.display = 'none'
+        }}
+      />
+    </button>
+  )
+}
+
 function SettingsButton() {
   const { settingsOpen, set } = useUI()
+  const { t } = useTranslation()
   return (
-    <button className="p-2 rounded-lg hover:bg-gray-100" title="设置" onClick={() => set({ settingsOpen: true })}>
-      <img src="/settings.png" alt="设置" className="w-5 h-5" />
+    <button className="p-2 rounded-lg hover:bg-gray-100" title={t('Settings')} onClick={() => set({ settingsOpen: true })}>
+      <img src="/settings.png" alt={t('Settings')} className="w-5 h-5" />
     </button>
   )
 }
 
 function TopBar() {
+  const { t } = useTranslation()
   return (
     <div className="h-16 bg-white shadow-soft flex items-center justify-between px-6">
       <div className="flex items-center gap-3">
         <img src="/logo.png" className="w-8 h-8 rounded-lg" alt="logo" />
-        <div className="font-extrabold text-2xl">EasyLora</div>
+        <div className="font-extrabold text-2xl">{t('EasyLora')}</div>
       </div>
              <div className="flex items-center gap-2">
-         <button className="p-2 rounded-lg hover:bg-gray-100" title="帮助">
-           <img src="/help.png" alt="帮助" className="w-5 h-5" />
-         </button>
-         <SettingsButton />
-       </div>
+          <LanguageToggle />
+          <button className="p-2 rounded-lg hover:bg-gray-100" title={t('Help')}>
+            <img src="/help.png" alt={t('Help')} className="w-5 h-5" />
+          </button>
+          <SettingsButton />
+        </div>
     </div>
   )
 }
 
 // Memoized Dataset Item Component
-const DatasetImageItem = React.memo(({ image }: { image: any }) => (
-  <div className="relative h-full">
-    <LazyImage 
-      src={getThumbnailUrl(image.previewUrl)} 
-      className="w-full h-28 rounded-xl bg-gray-100"
-      loading="lazy"
-      alt={image.file?.name || image.filename || 'unknown'}
-    />
-    <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-xl transition-all flex items-center justify-center">
-      <span className="text-white text-xs opacity-0 group-hover:opacity-100">点击编辑标签</span>
-    </div>
-    {image.caption && (
-      <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white text-xs p-1 rounded-b-xl truncate">
-        {image.caption}
+const DatasetImageItem = React.memo(({ image }: { image: any }) => {
+  const { t } = useTranslation()
+  return (
+    <div className="relative h-full">
+      <LazyImage 
+        src={getThumbnailUrl(image.previewUrl)} 
+        className="w-full h-28 rounded-xl bg-gray-100"
+        loading="lazy"
+        alt={image.file?.name || image.filename || 'unknown'}
+      />
+      <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-xl transition-all flex items-center justify-center">
+        <span className="text-white text-xs opacity-0 group-hover:opacity-100">{t('EditTags')}</span>
       </div>
-    )}
-  </div>
-));
+      {image.caption && (
+        <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white text-xs p-1 rounded-b-xl truncate">
+          {image.caption}
+        </div>
+      )}
+    </div>
+  )
+});
 
 // Memoized Processed Item Component
 const ProcessedImageItem = React.memo(({ image }: { image: any }) => {
+  const { t } = useTranslation()
   const src = image.previewUrl || `http://127.0.0.1:8000${image.path}`;
   return (
     <div className="relative h-full">
@@ -68,10 +102,10 @@ const ProcessedImageItem = React.memo(({ image }: { image: any }) => {
         loading="lazy"
       />
       <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 rounded-lg transition-all flex items-center justify-center">
-        <span className="text-white text-xs opacity-0 group-hover:opacity-100">点击编辑标签</span>
+        <span className="text-white text-xs opacity-0 group-hover:opacity-100">{t('EditTags')}</span>
       </div>
       <div className="text-xs text-gray-600 mt-2 mb-1 truncate" title={image.caption}>
-        {image.caption || '无标签'}
+        {image.caption || t('NoTags')}
       </div>
     </div>
   );
@@ -82,6 +116,7 @@ function UploadArea() {
   const { dataset, addFiles, removeItem, clearDataset, updateItemCaption, markItemAsProcessed, syncExistingCaptions, reorderDataset, sortOption, setSortOption } = useUI()
   const [selectedImage, setSelectedImage] = useState<any>(null)
   const [showSuccessTip, setShowSuccessTip] = useState(false)
+  const { t } = useTranslation()
   
   // 组件加载时同步已存在的标签和raw_uploads中的图片
   useEffect(() => {
@@ -103,14 +138,14 @@ function UploadArea() {
     const validFiles = accepted.filter(file => {
       // 检查文件类型
       if (!file.type.startsWith('image/')) {
-        console.warn(`跳过非图片文件: ${file.name}`)
+        console.warn(`Skip non-image file: ${file.name}`)
         return false
       }
       
       // 检查文件大小 (限制为50MB)
       const maxSize = 50 * 1024 * 1024 // 50MB
       if (file.size > maxSize) {
-        console.warn(`文件过大，跳过: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`)
+        console.warn(`File too large, skip: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`)
         return false
       }
       
@@ -118,7 +153,7 @@ function UploadArea() {
     })
     
     if (validFiles.length !== accepted.length) {
-      alert(`已跳过 ${accepted.length - validFiles.length} 个无效文件`)
+      alert(t('SkipInvalidFiles', { count: accepted.length - validFiles.length }))
     }
     
     await addFiles(validFiles)
@@ -127,7 +162,7 @@ function UploadArea() {
     setTimeout(() => {
       syncExistingCaptions()
     }, 100)
-  }, [addFiles, syncExistingCaptions])
+  }, [addFiles, syncExistingCaptions, t])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
     onDrop, 
@@ -191,7 +226,7 @@ function UploadArea() {
         setShowSuccessTip(true)
         setTimeout(() => setShowSuccessTip(false), 3000)
       } else {
-        throw new Error('保存失败')
+        throw new Error(t('UpdateCaptionError'))
       }
     } catch (error) {
       throw error
@@ -208,7 +243,7 @@ function UploadArea() {
       {/* 成功提示 */}
       {showSuccessTip && (
         <div className="absolute top-2 right-2 bg-green-500 text-white text-xs px-3 py-2 rounded-lg shadow-lg z-20">
-          ✓ 标签保存成功，图片已移至处理区域
+          ✓ {t('UpdateCaptionSuccess')}
         </div>
       )}
       
@@ -220,9 +255,9 @@ function UploadArea() {
       >
         <input {...getInputProps()} />
         <div>
-          <img src="/upload.png" alt="上传" className="w-16 h-16 mb-3 mx-auto" />
-          <div className="font-semibold text-lg">拖拽图片到此处，或点击选择</div>
-          <div className="text-gray-500 text-sm mt-1">建议 5-50 张，单文件最大 50MB</div>
+          <img src="/upload.png" alt={t('UploadImages')} className="w-16 h-16 mb-3 mx-auto" />
+          <div className="font-semibold text-lg">{t('UploadImages')}</div>
+          <div className="text-gray-500 text-sm mt-1">{t('UploadTip')}</div>
         </div>
       </div>
 
@@ -230,11 +265,11 @@ function UploadArea() {
         <>
            <div className="flex items-center justify-between mt-4">
              <button className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200" onClick={clearDataset}>
-               清空数据
+               {t('ClearData')}
              </button>
              <div className="flex items-center gap-4">
                <div className="text-sm text-gray-500">
-                 <span className="mr-2">分辨率低于 512px 的图片可能影响效果</span>
+                 <span className="mr-2">{t('ResolutionWarning')}</span>
                </div>
                <SortOptions
                  currentSort={sortOption}
@@ -274,6 +309,7 @@ function ProcessedImagesPanel() {
   const [selectedImage, setSelectedImage] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [existingProcessedImages, setExistingProcessedImages] = useState<any[]>([])
+  const { t } = useTranslation()
 
   // 过滤出已处理的图片
   const processedImages = useMemo(() => dataset.filter(item => item.isProcessed), [dataset]);
@@ -294,7 +330,7 @@ function ProcessedImagesPanel() {
         setExistingProcessedImages(imagesWithId)
       }
     } catch (error) {
-      console.error('加载处理后图片失败:', error)
+      console.error('Failed to load processed images:', error)
     } finally {
       setLoading(false)
     }
@@ -306,7 +342,7 @@ function ProcessedImagesPanel() {
 
   const updateCaption = async (filename: string, caption: string) => {
     try {
-      console.log('更新已处理图片标签:', { filename, caption })
+      console.log('Update processed image caption:', { filename, caption })
       
       // 获取当前设置，决定是否自动添加模型名称前缀
       const { settings, modelName } = useUI.getState()
@@ -334,11 +370,11 @@ function ProcessedImagesPanel() {
         })
       })
       
-      console.log('API响应状态:', res.status)
+      console.log('API response status:', res.status)
       
       if (res.ok) {
         const data = await res.json()
-        console.log('API响应数据:', data)
+        console.log('API response data:', data)
         
         // 更新本地状态
         setExistingProcessedImages(prev => 
@@ -350,11 +386,11 @@ function ProcessedImagesPanel() {
         )
       } else {
         const errorText = await res.text()
-        console.error('API错误响应:', errorText)
-        throw new Error(`保存失败: ${res.status} - ${errorText}`)
+        console.error('API error response:', errorText)
+        throw new Error(`${t('UpdateCaptionError')}: ${res.status} - ${errorText}`)
       }
     } catch (error) {
-      console.error('更新标签时发生错误:', error)
+      console.error('Error updating caption:', error)
       throw error
     }
   }
@@ -429,15 +465,15 @@ function ProcessedImagesPanel() {
             })
             
             if (!res.ok) {
-              console.error('删除图片失败:', await res.text())
+              console.error('Delete image failed:', await res.text())
               // 如果删除失败，可以考虑重新添加到UI中
             }
           } catch (error) {
-            console.error('删除图片时发生错误:', error)
+            console.error('Error deleting image:', error)
           }
         }, 0)
       } else {
-        // 对于新处理的图片，使用store的removeItem
+        // 对于新处理的图片，使用store의 removeItem
         removeItem(id)
       }
     }
@@ -449,7 +485,7 @@ function ProcessedImagesPanel() {
     return (
       <div className="card p-6 mt-4">
         <div className="text-center text-gray-500">
-          {loading ? '正在加载...' : '暂无处理后的图片，请先在上方上传并编辑标签'}
+          {loading ? t('Loading') : t('NoProcessedImages')}
         </div>
       </div>
     )
@@ -459,16 +495,16 @@ function ProcessedImagesPanel() {
     <>
       <div className="card p-6 mt-4">
                  <div className="flex items-center justify-between mb-4">
-           <h3 className="font-semibold">处理后的图片与标签 ({allProcessedImages.length})</h3>
-           <div className="flex items-center gap-2">
-             <button 
-               onClick={loadExistingProcessedImages}
-               className="px-3 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200"
-             >
-               刷新
-             </button>
-           </div>
-         </div>
+            <h3 className="font-semibold">{t('ProcessedImages', { count: allProcessedImages.length })}</h3>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={loadExistingProcessedImages}
+                className="px-3 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200"
+              >
+                {t('Refresh')}
+              </button>
+            </div>
+          </div>
         
           <VirtualImageGrid
             images={allProcessedImages}
@@ -497,6 +533,7 @@ function ProcessedImagesPanel() {
 function ParamsPanel() {
   const { modelName, baseModel, learningRate, trainSteps, saveEverySteps, autoResume, optimizerType, unetLr, textEncoderLr, set, progress, eta, settings } = useUI()
   const [showSavedTip, setShowSavedTip] = useState(false)
+  const { t } = useTranslation()
 
   // 检测设置变化并显示保存提示
   const showSaveTip = () => {
@@ -509,12 +546,12 @@ function ParamsPanel() {
       {/* 保存提示 */}
       {showSavedTip && (
         <div className="absolute top-2 right-2 bg-green-500 text-white text-xs px-2 py-1 rounded-lg shadow-lg animate-pulse z-10">
-          ✓ 设置已保存
+          ✓ {t('SettingsSaved')}
         </div>
       )}
       
       <div className="mb-3">
-        <div className="text-sm mb-1">模型名称</div>
+        <div className="text-sm mb-1">{t('ModelName')}</div>
         <input
           className="w-full border rounded-xl px-3 py-2"
           value={modelName}
@@ -526,7 +563,7 @@ function ParamsPanel() {
       </div>
 
       <div className="mb-3">
-        <div className="text-sm mb-1">基底模型</div>
+        <div className="text-sm mb-1">{t('BaseModel')}</div>
         <select
           className="w-full border rounded-xl px-3 py-2"
           value={baseModel}
@@ -542,7 +579,7 @@ function ParamsPanel() {
       </div>
 
       <div className="mb-3">
-        <div className="text-sm mb-1">学习率：{learningRate}</div>
+        <div className="text-sm mb-1">{t('LearningRate')}：{learningRate}</div>
         <input
           type="range"
           min={1}
@@ -566,7 +603,7 @@ function ParamsPanel() {
       </div>
 
       <div className="mb-6">
-        <div className="text-sm mb-1">训练步数：{trainSteps}</div>
+        <div className="text-sm mb-1">{t('TrainSteps')}：{trainSteps}</div>
         <input
           type="range"
           min={500}
@@ -590,7 +627,7 @@ function ParamsPanel() {
       </div>
 
       <div className="mb-4">
-        <div className="text-sm mb-1">每 N 步保存（0=关闭）</div>
+        <div className="text-sm mb-1">{t('SaveEverySteps')}</div>
         <div className="flex items-center gap-3">
           <input
             type="number"
@@ -624,13 +661,13 @@ function ParamsPanel() {
                 <img src="/yes.png" alt="✓"/>
               )}
             </span>
-            <span className="text-base font-medium">断点续训</span>
+            <span className="text-base font-medium">{t('AutoResume')}</span>
           </button>
         </div>
       </div>
 
       <div className="mb-4">
-        <div className="text-sm mb-1">优化器</div>
+        <div className="text-sm mb-1">{t('Optimizer')}</div>
         <select
           className="w-full border rounded-xl px-3 py-2"
           value={optimizerType || 'AdamW8bit'}
@@ -647,8 +684,8 @@ function ParamsPanel() {
             showSaveTip();
           }}
         >
-          <option value="AdamW8bit">AdamW8bit (默认)</option>
-          <option value="DAdaptation">DAdaptation (自动LR)</option>
+          <option value="AdamW8bit">{t('DefaultOptimizer')}</option>
+          <option value="DAdaptation">{t('AutoLROptimizer')}</option>
           <option value="Lion">Lion</option>
           <option value="AdamW">AdamW</option>
         </select>
@@ -706,10 +743,11 @@ function LogsPanel() {
 
 function ProgressInfo() {
   const { progress, eta, stepText } = useUI()
+  const { t } = useTranslation()
   return (
     <div className="text-sm text-gray-600 mt-1 flex justify-between">
       <span>{stepText}</span>
-      <span>时间：{eta}</span>
+      <span>{t('Time')}：{eta}</span>
     </div>
   )
 }
@@ -717,6 +755,7 @@ function ProgressInfo() {
 function StartTrainingButton() {
   const { dataset, set, resetProgress, addLog, settings, modelName } = useUI()
   const [loading, setLoading] = useState(false)
+  const { t } = useTranslation()
 
   const start = async () => {
     setLoading(true)
@@ -730,13 +769,13 @@ function StartTrainingButton() {
       
       if (!hasProcessedImages && !dataset.length) {
         setLoading(false)
-        return alert('请先上传图片或确保有已处理的图片')
+        return alert(t('UploadFirstAlert'))
       }
       
       if (hasProcessedImages) {
-        addLog(`检测到 ${processedData.images.length} 张已处理的图片，直接开始训练...`)
+        addLog(t('LogHasProcessed', { count: processedData.images.length }))
       } else {
-        addLog('开始上传与训练...')
+        addLog(t('LogStartUpload'))
         // 上传新图片
         const form = new FormData()
         for (const item of dataset) {
@@ -747,9 +786,9 @@ function StartTrainingButton() {
     } catch (error) {
       if (!dataset.length) {
         setLoading(false)
-        return alert('无法检查已处理图片，请先上传图片')
+        return alert(t('CheckErrorAlert'))
       }
-      addLog('开始上传与训练...')
+      addLog(t('LogStartUpload'))
       // 上传图片
       const form = new FormData()
       for (const item of dataset) {
@@ -792,18 +831,18 @@ function StartTrainingButton() {
         set({ progress: msg.p, eta: msg.elapsed ?? msg.eta ?? '--:--', stepText: text })
       }
       if (msg.type === 'done') {
-        addLog(`完成：${msg.path}`)
+        addLog(`${t('Done')}: ${msg.path}`)
         ws.close()
         setLoading(false)
       }
       if (msg.type === 'error') {
-        addLog(`错误：${msg.error}`)
+        addLog(`${t('Error')}: ${msg.error}`)
         ws.close()
         setLoading(false)
       }
     }
     ws.onerror = () => {
-      addLog('WebSocket 连接失败，请先启动后端 server.py')
+      addLog(t('WsError'))
       setLoading(false)
     }
   }
@@ -811,10 +850,10 @@ function StartTrainingButton() {
   const stop = async () => {
     try {
       await fetch('/api/stop', { method: 'POST' })
-      addLog('已发送停止指令，正在终止训练...')
+      addLog(t('LogStopping'))
       setLoading(false)
     } catch (e) {
-      addLog('停止失败')
+      addLog(t('StopFailed'))
     }
   }
 
@@ -822,15 +861,15 @@ function StartTrainingButton() {
     loading ? (
       <div className="flex gap-3">
         <button className="btn-primary flex-1 text-center text-lg py-3" onClick={start} disabled>
-          训练中...
+          {t('Training')}
         </button>
         <button className="px-4 py-3 rounded-xl bg-gray-100 hover:bg-gray-200" onClick={stop}>
-          停止
+          {t('Stop')}
         </button>
       </div>
     ) : (
       <button className="btn-primary w-full text-center text-lg py-3" onClick={start}>
-        开始训练
+        {t('StartTraining')}
       </button>
     )
   )
@@ -843,6 +882,7 @@ export default function App() {
   const [cpu, setCpu] = useState<string>("--")
   const [ram, setRam] = useState<number | null>(null)
   const [vram, setVram] = useState<number | null>(null)
+  const { t } = useTranslation()
 
   useEffect(() => {
     // 检查是否有恢复的设置
@@ -905,7 +945,7 @@ export default function App() {
               <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
             </svg>
             </div>
-            <div className="ml-3 text-sm text-blue-700">✓ 已恢复上次的训练设置</div>
+            <div className="ml-3 text-sm text-blue-700">✓ {t('RestoreSettings')}</div>
           </div>
         </div>
       )}
@@ -923,12 +963,12 @@ export default function App() {
       </div>
       <div className="h-12 flex items-center justify-between text-sm text-gray-600 px-6">
         <div>
-          <span className="mr-4">GPU：{gpu}</span>
-          <span className="mr-4">CPU：{cpu}</span>
-          <span className="mr-4">RAM：{ram !== null ? `${ram}%` : '--'}</span>
-          <span>VRAM：{vram !== null ? `${vram}%` : '--'}</span>
+          <span className="mr-4">{t('Gpu')}：{gpu}</span>
+          <span className="mr-4">{t('Cpu')}：{cpu}</span>
+          <span className="mr-4">{t('Ram')}：{ram !== null ? `${ram}%` : '--'}</span>
+          <span>{t('Vram')}：{vram !== null ? `${vram}%` : '--'}</span>
         </div>
-        <div>Step：{stepText}</div>
+        <div>{t('Step')}：{t(stepText)}</div>
       </div>
       {settingsOpen && <Settings onClose={() => set({ settingsOpen: false })} />}
     </div>

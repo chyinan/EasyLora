@@ -26,6 +26,35 @@ interface OptimizedImageGridProps {
   onRemove?: (id: string) => void
 }
 
+import React, { useRef, useEffect, useState, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
+import OptimizedLazyImage from './OptimizedLazyImage'
+import { optimizeImageGrid } from '../utils/lightweightOptimizer'
+
+interface ImageItem {
+  id: string
+  src: string
+  alt?: string
+  thumbnail?: string
+  caption?: string
+  previewUrl?: string
+}
+
+interface OptimizedImageGridProps {
+  images: ImageItem[]
+  className?: string
+  itemClassName?: string
+  useThumbnails?: boolean
+  thumbnailSize?: number
+  thumbnailQuality?: number
+  columns?: number
+  gap?: number
+  onImageClick?: (image: ImageItem) => void
+  onImageLoad?: (image: ImageItem) => void
+  onImageError?: (image: ImageItem, error: any) => void
+  onRemove?: (id: string) => void
+}
+
 const OptimizedImageGrid: React.FC<OptimizedImageGridProps> = ({
   images,
   className = '',
@@ -43,6 +72,7 @@ const OptimizedImageGrid: React.FC<OptimizedImageGridProps> = ({
   const containerRef = useRef<HTMLDivElement>(null)
   const [visibleImages, setVisibleImages] = useState<ImageItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const { t } = useTranslation()
 
   // 分批渲染图片，避免一次性渲染过多
   const batchRenderImages = useCallback(() => {
@@ -108,7 +138,7 @@ const OptimizedImageGrid: React.FC<OptimizedImageGridProps> = ({
   if (images.length === 0) {
     return (
       <div className={`flex items-center justify-center h-64 text-gray-500 ${className}`}>
-        暂无图片
+        {t('NoImages')}
       </div>
     )
   }
@@ -150,7 +180,7 @@ const OptimizedImageGrid: React.FC<OptimizedImageGridProps> = ({
                   onRemove(image.id)
                 }}
                 className="absolute top-2 right-2 w-6 h-6 bg-red-500 hover:bg-red-600 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center text-xs font-bold"
-                title="删除图片"
+                title={t('DeleteImage')}
               >
                 ×
               </button>
@@ -177,13 +207,13 @@ const OptimizedImageGrid: React.FC<OptimizedImageGridProps> = ({
       {isLoading && visibleImages.length < images.length && (
         <div className="flex items-center justify-center py-8">
           <div className="w-6 h-6 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin"></div>
-          <span className="ml-3 text-gray-600">加载中...</span>
+          <span className="ml-3 text-gray-600">{t('Loading')}</span>
         </div>
       )}
 
       {/* 图片总数显示 */}
       <div className="text-center py-4 text-sm text-gray-500">
-        共 {images.length} 张图片
+        {t('TotalImages', { count: images.length })}
       </div>
     </div>
   )

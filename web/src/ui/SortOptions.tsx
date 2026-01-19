@@ -1,4 +1,5 @@
 import React from 'react'
+import { useTranslation } from 'react-i18next'
 
 export type SortOption = 'name' | 'size' | 'date' | 'custom'
 
@@ -9,26 +10,27 @@ interface SortOptionsProps {
 }
 
 export default function SortOptions({ currentSort, onSortChange, onResetOrder }: SortOptionsProps) {
+  const { t } = useTranslation()
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="text-gray-500">排序:</span>
+      <span className="text-gray-500">{t('SortBy')}:</span>
       <select
         value={currentSort}
         onChange={(e) => onSortChange(e.target.value as SortOption)}
         className="px-2 py-1 border rounded text-xs bg-white"
       >
-        <option value="custom">自定义顺序</option>
-        <option value="name">按文件名</option>
-        <option value="size">按文件大小</option>
-        <option value="date">按上传时间</option>
+        <option value="custom">{t('CustomOrder')}</option>
+        <option value="name">{t('ByFileName')}</option>
+        <option value="size">{t('ByFileSize')}</option>
+        <option value="date">{t('ByUploadTime')}</option>
       </select>
       {currentSort !== 'custom' && (
         <button
           onClick={onResetOrder}
           className="px-2 py-1 text-blue-500 hover:text-blue-700 text-xs"
-          title="恢复自定义顺序"
+          title={t('RestoreCustomOrder')}
         >
-          重置
+          {t('Reset')}
         </button>
       )}
     </div>

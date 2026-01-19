@@ -68,7 +68,7 @@ export const useUI = create<UIState>()(
       uploading: false,
       progress: 0,
       eta: '--:--',
-      stepText: '闲置',
+      stepText: 'Idle',
       logs: [],
       dataset: [],
       settingsOpen: false,
@@ -187,7 +187,7 @@ export const useUI = create<UIState>()(
         })
         set({ dataset: [] })
       },
-      resetProgress: () => set({ progress: 0, eta: '--:--', stepText: '闲置' }),
+            resetProgress: () => set({ progress: 0, eta: '--:--', stepText: 'Idle' }),
       setSettings: (s) => {
         // 仅更新配置，不覆盖 autoResume 等用户手动修改的状态
         set((state) => ({
