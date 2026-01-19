@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { validateImageForTraining, cleanupPreviewUrl } from './utils/imageUtils'
+import { validateImageForTraining, cleanupPreviewUrl } from './utils/imageCache'
 import { checkExistingCaptions, syncCaptionsToLocal } from './utils/captionSync'
 import { SortOption, sortImages } from './ui/SortOptions'
 
@@ -10,6 +10,7 @@ export interface DatasetItem {
   id: string
   file: File | null
   filename?: string
+  path?: string
   previewUrl: string
   caption?: string
   isProcessed?: boolean

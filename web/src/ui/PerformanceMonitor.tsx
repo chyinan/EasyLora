@@ -20,7 +20,7 @@ export default function PerformanceMonitor() {
   const [isMonitoring, setIsMonitoring] = useState(false)
 
   useEffect(() => {
-    let intervalId: NodeJS.Timeout
+    let intervalId: ReturnType<typeof setInterval> | undefined
 
     if (isMonitoring) {
       intervalId = setInterval(() => {

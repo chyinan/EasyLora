@@ -8,6 +8,7 @@ import DraggableImageGrid from './DraggableImageGrid'
 import VirtualImageGrid from './VirtualImageGrid'
 import LazyImage from './LazyImage'
 import SortOptions, { SortOption } from './SortOptions'
+import { getThumbnailUrl } from '../utils/imageCache'
 
 function SettingsButton() {
   const { settingsOpen, set } = useUI()
@@ -34,33 +35,6 @@ function TopBar() {
     </div>
   )
 }
-
-// Helper to construct thumbnail URL
-const getThumbnailUrl = (pathOrUrl: string, size = 200) => {
-  if (!pathOrUrl) return '';
-  if (pathOrUrl.startsWith('blob:')) return pathOrUrl; // Client-side blob
-
-  // Handle server paths
-  // The path stored in state might be "/workspace/..." or full url "http://.../workspace/..."
-  let path = pathOrUrl;
-  if (path.startsWith('http')) {
-     try {
-       const url = new URL(path);
-       path = url.pathname;
-     } catch (e) {
-       // If URL parsing fails, just use the path as is if it looks relative
-     }
-  }
-  
-  // Check if it looks like a server path we can generate thumbnail for
-  if (path.startsWith('/workspace/') || path.startsWith('workspace/')) {
-    // Ensure leading slash for consistency when passing to API logic or matching
-    const cleanPath = path.startsWith('/') ? path : '/' + path;
-    return `/api/thumbnail?path=${encodeURIComponent(cleanPath)}&width=${size}&height=${size}`;
-  }
-  
-  return pathOrUrl;
-};
 
 // Memoized Dataset Item Component
 const DatasetImageItem = React.memo(({ image }: { image: any }) => (
@@ -765,7 +739,9 @@ function StartTrainingButton() {
         addLog('开始上传与训练...')
         // 上传新图片
         const form = new FormData()
-        for (const item of dataset) form.append('files', item.file)
+        for (const item of dataset) {
+          if (item.file) form.append('files', item.file)
+        }
         await fetch('/api/upload', { method: 'POST', body: form })
       }
     } catch (error) {
@@ -776,7 +752,9 @@ function StartTrainingButton() {
       addLog('开始上传与训练...')
       // 上传图片
       const form = new FormData()
-      for (const item of dataset) form.append('files', item.file)
+      for (const item of dataset) {
+        if (item.file) form.append('files', item.file)
+      }
       await fetch('/api/upload', { method: 'POST', body: form })
     }
 

@@ -8,6 +8,7 @@ interface ImageItem {
   alt?: string
   thumbnail?: string
   caption?: string
+  previewUrl?: string
 }
 
 interface OptimizedImageGridProps {
@@ -135,7 +136,7 @@ const OptimizedImageGrid: React.FC<OptimizedImageGridProps> = ({
               thumbnailQuality={thumbnailQuality}
               className="w-full h-full object-cover rounded-lg shadow-md"
               onLoad={() => handleImageLoad(image)}
-              onError={(error) => handleImageError(image, error)}
+              onError={() => handleImageError(image, undefined)}
             />
             
             {/* 悬停效果 */}

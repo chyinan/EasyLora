@@ -181,14 +181,20 @@ const ImageGalleryExample: React.FC = () => {
         ) : (
           <VirtualImageGrid
             images={mockImages}
-            useThumbnails={useThumbnails}
-            thumbnailSize={thumbnailSize}
-            thumbnailQuality={thumbnailQuality}
             columns={columns}
-            gap={gap}
             onImageClick={handleImageClick}
-            onImageLoad={handleImageLoad}
-            onImageError={handleImageError}
+            onRemove={(id) => console.log('Remove:', id)}
+            renderImage={(image) => (
+              <div className="relative">
+                <img 
+                  src={useThumbnails ? `${image.src}?w=${thumbnailSize}&q=${thumbnailQuality}` : image.src} 
+                  alt={image.alt} 
+                  className="w-full h-full object-cover rounded"
+                  onLoad={() => handleImageLoad(image)}
+                  onError={(e) => handleImageError(image, e)}
+                />
+              </div>
+            )}
             className="h-screen"
           />
         )}

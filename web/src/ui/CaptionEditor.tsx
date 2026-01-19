@@ -42,6 +42,7 @@ interface CaptionEditorProps {
     caption?: string
     filename?: string
     path?: string
+    isRaw?: boolean
   }
   onClose: () => void
   onSave: (filename: string, caption: string) => void

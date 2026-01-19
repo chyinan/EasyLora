@@ -40,10 +40,9 @@ function DraggableImageItem({ id, image, onImageClick, onRemove, children }: Dra
   } = useSortable({ id })
 
   const style = {
-    transform: CSS.Transform.toString(transform),
+    transform: isDeleting ? 'scale(0.8)' : CSS.Transform.toString(transform),
     transition: isDeleting ? 'opacity 0.2s ease-out, transform 0.2s ease-out' : transition,
     opacity: isDragging ? 0.5 : isDeleting ? 0 : 1,
-    transform: isDeleting ? 'scale(0.8)' : CSS.Transform.toString(transform),
   }
 
   const handleRemove = (e: React.MouseEvent) => {
