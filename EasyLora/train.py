@@ -1,7 +1,7 @@
 """
 train.py
 
-LoRA 训练核心模块 - 支持 kohya-ss sd-scripts 和 diffusers fallback
+LoRA 训练核心模块 - 使用 kohya-ss sd-scripts 进行单 GPU 训练
 
 重构版本：
 - 模块化设计，职责清晰
@@ -12,6 +12,8 @@ LoRA 训练核心模块 - 支持 kohya-ss sd-scripts 和 diffusers fallback
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -19,16 +21,13 @@ import signal
 import subprocess
 import sys
 import time
-import platform
+import tempfile
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Set
+from typing import Callable, List, Optional
 
-import torch
-import numpy as np
-from PIL import Image
-from torch.utils.data import Dataset, DataLoader
+from safetensors import safe_open
 
 from .config import (
     AutoTrainParams,
@@ -36,7 +35,7 @@ from .config import (
     auto_select_image_size,
     auto_params_sdxl,
     get_output_lora_path,
-    DEFAULT_KOHYA_SCRIPTS_DIR,
+    resolve_project_path,
     get_settings,
     format_output_filename,
 )
@@ -72,8 +71,6 @@ class VRAMConfig:
 class KohyaConfig:
     """Kohya 训练配置"""
     script_path: Path
-    use_legacy_sdxl: bool = False
-    is_sdxl: bool = False
     runtime_precision: str = "fp16"
     
 
@@ -87,26 +84,43 @@ def format_eta(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
 
 
-def filter_images_with_captions(dataset_dir: Path) -> List[Path]:
-    """筛选有有效标签的图片"""
-    supported_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-    images = []
-    
-    for img_file in dataset_dir.iterdir():
-        if img_file.is_file() and img_file.suffix.lower() in supported_exts:
-            caption_file = img_file.with_suffix(".txt")
-            if caption_file.exists():
-                try:
-                    caption = caption_file.read_text(encoding="utf-8").strip()
-                    if is_valid_caption(caption):
-                        images.append(img_file)
-                except Exception:
-                    continue
-    
-    return sorted(images)
+def require_cuda():
+    """Fail before spawning a trainer; device enumeration alone cannot verify a Blackwell wheel."""
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("未安装 PyTorch。请按 README 安装与显卡匹配的 CUDA 版 PyTorch。") from exc
+    if not torch.cuda.is_available():
+        raise RuntimeError("未检测到可用 CUDA GPU；请检查 NVIDIA 驱动和 CUDA 版 PyTorch。")
+    try:
+        torch.ones(1, device="cuda").add_(1).item()
+    except RuntimeError as exc:
+        raise RuntimeError(f"PyTorch 无法在当前显卡上执行 CUDA 运算，请核对驱动及 CUDA wheel：{exc}") from exc
+    return torch
 
 
-def detect_vram() -> VRAMConfig:
+def validate_lora(path: Path) -> None:
+    """Only publish the fresh final file containing Kohya adapter matrices."""
+    if not path.is_file():
+        raise RuntimeError("训练未生成最终 LoRA 文件（中间检查点不作为最终产物）")
+    try:
+        with safe_open(str(path), framework="np") as tensors:
+            keys = set(tensors.keys())
+            for key in keys:
+                if key.startswith("lora_") and key.endswith(".lora_down.weight"):
+                    up = key[:-len(".lora_down.weight")] + ".lora_up.weight"
+                    if up in keys:
+                        down_shape = tensors.get_slice(key).get_shape()
+                        up_shape = tensors.get_slice(up).get_shape()
+                        if (len(down_shape) in (2, 4) and len(up_shape) == len(down_shape)
+                                and all(down_shape) and all(up_shape) and down_shape[0] == up_shape[1]):
+                            return
+    except Exception as exc:
+        raise RuntimeError(f"无法读取训练产物 {path.name}: {exc}") from exc
+    raise RuntimeError(f"训练产物 {path.name} 不含配对的 Kohya LoRA 权重")
+
+
+def detect_vram(torch) -> VRAMConfig:
     """检测 GPU 显存"""
     config = VRAMConfig()
     settings = get_settings()
@@ -124,7 +138,7 @@ def detect_vram() -> VRAMConfig:
     return config
 
 
-def check_bf16_support() -> bool:
+def check_bf16_support(torch) -> bool:
     """检查是否支持 bfloat16"""
     if not torch.cuda.is_available():
         return False
@@ -139,25 +153,28 @@ def check_bf16_support() -> bool:
 
 def kill_process_tree(proc: subprocess.Popen) -> None:
     """终止进程树"""
-    if os.name == 'nt':
-        try:
-            os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
-        except Exception:
-            pass
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        # Target this job and its children, not every python.exe on the machine.
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     else:
+        # Popen(start_new_session=True) made this PID the leader of a private group.
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except Exception:
-            pass
-    
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
     try:
-        proc.terminate()
         proc.wait(timeout=3)
-    except Exception:
-        try:
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
             proc.kill()
-        except Exception:
-            pass
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def rm_tree(path: Path) -> None:
@@ -222,41 +239,6 @@ def extract_eta(line: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-# ============== 数据集 ==============
-
-class ImageCaptionDataset(Dataset):
-    """图片-标签数据集"""
-    
-    def __init__(self, image_paths: List[Path], captions_dir: Path, image_size: int):
-        self.image_paths = image_paths
-        self.captions_dir = captions_dir
-        self.image_size = image_size
-    
-    def __len__(self) -> int:
-        return len(self.image_paths)
-    
-    def __getitem__(self, idx):
-        img_path = self.image_paths[idx]
-        
-        with Image.open(img_path) as im:
-            im = im.convert("RGB").resize((self.image_size, self.image_size))
-        
-        caption_path = self.captions_dir / f"{img_path.stem}.txt"
-        text = caption_path.read_text(encoding="utf-8") if caption_path.exists() else ""
-        
-        return im, text
-
-
-def collate_fn(batch):
-    """数据批次整理函数"""
-    images, texts = zip(*batch)
-    imgs = torch.stack([
-        torch.from_numpy(np.array(img, dtype=np.uint8)).permute(2, 0, 1)
-        for img in images
-    ]).float() / 255.0
-    return imgs, list(texts)
-
-
 # ============== Kohya 训练命令构建器 ==============
 
 class KohyaCommandBuilder:
@@ -268,18 +250,14 @@ class KohyaCommandBuilder:
         self.cmd: List[str] = []
         
     def build_base_command(self, script_path: Path, output_dir: Path, 
-                           output_name: str, dataset_config: Path) -> 'KohyaCommandBuilder':
+                           output_name: str, dataset_config: Path, start_step: int = 0) -> 'KohyaCommandBuilder':
         """构建基础命令"""
-        tokenizer_cache = Path(self.settings.get(
-            'TRANSFORMERS_CACHE', 
-            'D:/Program/EasyLora/.hf/hub'
-        )).resolve()
-        
+        # Accelerator works directly under Python in single-GPU mode. Do not inherit
+        # distributed launcher defaults from a user's unrelated accelerate config.
         self.cmd = [
-            sys.executable, "-u", "-m", "accelerate.commands.launch",
-            str(script_path),
+            sys.executable, "-u", str(script_path),
             "--pretrained_model_name_or_path", self.params.model_id,
-            "--tokenizer_cache_dir", str(tokenizer_cache),
+            "--save_model_as", "safetensors",
             "--dataset_config", str(dataset_config),
             "--resolution", f"{self.params.image_size},{self.params.image_size}",
             "--output_dir", str(output_dir),
@@ -289,10 +267,16 @@ class KohyaCommandBuilder:
             "--network_alpha", str(self.params.lora_rank),
             "--learning_rate", str(self.params.learning_rate),
             "--train_batch_size", str(self.params.train_batch_size),
-            "--max_train_steps", str(self.params.train_steps),
+            "--max_train_steps", str(self.params.train_steps - start_step),
             "--gradient_accumulation_steps", str(self.params.gradient_accumulation_steps),
             "--max_data_loader_n_workers", "0",
         ]
+        if self.settings.get("DEFAULT_VAE_PATH"):
+            self.cmd.extend(["--vae", str(resolve_project_path(self.settings["DEFAULT_VAE_PATH"]))])
+        if self.params.model_family == "SD2.1":
+            self.cmd.extend(["--v2", "--v_parameterization"])
+        if self.params.model_family == "SDXL":
+            self.cmd.append("--no_half_vae")
         return self
     
     def add_precision(self, precision: str) -> 'KohyaCommandBuilder':
@@ -320,7 +304,7 @@ class KohyaCommandBuilder:
         """添加优化器设置"""
         if optimizer_type:
             self.cmd.extend(["--optimizer_type", optimizer_type])
-        elif self.settings.get('USE_8BIT_ADAM', True):
+        elif self.settings.get('USE_8BIT_ADAM', False):
             self.cmd.append("--use_8bit_adam")
         
         if unet_lr:
@@ -330,32 +314,23 @@ class KohyaCommandBuilder:
         
         return self
     
-    def add_save_settings(self, save_every: int, save_state: bool, 
-                          auto_resume: bool, output_dir: Path, 
-                          output_stem: str) -> 'KohyaCommandBuilder':
-        """添加保存设置"""
+    def add_save_settings(self, save_every: int, save_state: bool,
+                          resume: Optional[Path]) -> 'KohyaCommandBuilder':
         if save_every > 0:
-            last_n = int(self.settings.get('SAVE_LAST_N_STEPS', 3))
-            self.cmd.extend([
-                "--save_every_n_steps", str(save_every),
-                "--save_last_n_steps", str(last_n)
-            ])
-        
+            self.cmd.extend(["--save_every_n_steps", str(save_every)])
+            keep = int(self.settings.get("SAVE_LAST_N_STEPS", 3))
+            if keep > 0:
+                # Upstream uses a distance in steps, not the number of checkpoint files.
+                self.cmd.extend(["--save_last_n_steps", str((keep - 1) * save_every)])
         if save_state:
             self.cmd.append("--save_state")
-        
-        # 断点续训
-        if auto_resume:
-            candidates = sorted(
-                output_dir.glob(f"{output_stem}*-state"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True
-            )
-            if candidates and candidates[0].exists():
-                self.cmd.extend(["--resume", str(candidates[0])])
-        
+        if resume is not None:
+            # The optimizer/network/RNG are restored by Accelerate. External offset +
+            # a remaining-step budget avoids sd-scripts counting skipped batches as
+            # completed optimizer steps when accumulation or epoch boundaries apply.
+            self.cmd.extend(["--resume", str(resume), "--initial_step", "0"])
         return self
-    
+
     def add_vram_optimizations(self, vram_config: VRAMConfig) -> 'KohyaCommandBuilder':
         """添加显存优化设置"""
         self.cmd.extend(["--cache_latents", "--vae_batch_size", "1"])
@@ -366,29 +341,15 @@ class KohyaCommandBuilder:
         if vram_config.low_vram_mode:
             self.cmd.append("--network_train_unet_only")
         
-        # 高效注意力
-        try:
-            import xformers
-            if self.settings.get('USE_XFORMERS', True):
-                self.cmd.append("--xformers")
-        except ImportError:
-            if self.settings.get('USE_SDPA', False) and platform.system() != 'Windows':
-                self.cmd.append("--sdpa")
-        
+        if self.settings.get('USE_XFORMERS', False):
+            self.cmd.append("--xformers")
+        elif self.settings.get('USE_SDPA', True):
+            self.cmd.append("--sdpa")
+
         # 极低显存时缓存到磁盘
         if vram_config.vram_gb > 0 and vram_config.vram_gb <= 10.0:
             self.cmd.append("--cache_latents_to_disk")
         
-        return self
-    
-    def add_sdxl_settings(self, use_legacy: bool) -> 'KohyaCommandBuilder':
-        """添加 SDXL 设置"""
-        if not use_legacy:
-            self.cmd.extend([
-                "--sdxl",
-                "--full_bf16",
-                "--min_snr_gamma", "5.0",
-            ])
         return self
     
     def add_extra_args(self) -> 'KohyaCommandBuilder':
@@ -396,7 +357,21 @@ class KohyaCommandBuilder:
         extra = str(self.settings.get('EXTRA_ARGS', '')).strip()
         if extra:
             import shlex
-            self.cmd.extend(shlex.split(extra))
+            lexer = shlex.shlex(extra, posix=True)
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            if os.name == "nt":
+                lexer.escape = ""  # Preserve backslashes in unquoted Windows paths.
+            args = list(lexer)
+            if "--resume" in self.cmd and any(
+                arg.split("=", 1)[0] in {"--lr_scheduler", "--lr_scheduler_type", "--lr_scheduler_args",
+                                          "--lr_warmup_steps", "--lr_decay_steps", "--max_train_epochs",
+                                          "--max_train_steps", "--initial_step", "--initial_epoch",
+                                          "--skip_until_initial_step", "--resume", "--config_file"}
+                for arg in args
+            ):
+                raise ValueError("自动续训仅支持默认恒定学习率和界面设置的步数；请移除覆盖调度器或步数的额外参数")
+            self.cmd.extend(args)
         return self
     
     def get_command(self) -> List[str]:
@@ -412,15 +387,13 @@ class KohyaTrainer:
         self.params = params
         self.callbacks = callbacks
         self.settings = get_settings()
-        self.vram_config = detect_vram()
+        self.torch = require_cuda()
+        self.vram_config = detect_vram(self.torch)
     
     def prepare_params(self) -> None:
         """准备并调整训练参数（显存自适应）"""
         if not self.vram_config.vram_gb:
             return
-        
-        is_sdxl = 'sdxl' in str(self.params.model_id).lower() or \
-                  'xl' in Path(self.params.model_id).name.lower()
         
         # 低显存自适应
         need_downgrade = (
@@ -445,204 +418,207 @@ class KohyaTrainer:
                 self.params.image_size = 640
                 self.callbacks.log("显存 < 9GB：分辨率降至 640")
     
-    def select_script(self, kohya_path: Path) -> KohyaConfig:
-        """选择训练脚本"""
-        is_sdxl = 'sdxl' in str(self.params.model_id).lower() or \
-                  'xl' in Path(self.params.model_id).name.lower()
-        
-        config = KohyaConfig(script_path=kohya_path, is_sdxl=is_sdxl)
-        
-        # SDXL 优先使用专用脚本
-        if is_sdxl:
-            legacy_script = kohya_path.parent / "sdxl_train_network.py"
-            if legacy_script.exists():
-                config.script_path = legacy_script
-                config.use_legacy_sdxl = True
-                self.callbacks.log("使用 sdxl_train_network.py 进行 SDXL 训练")
-        
-        # 确定运行时精度
-        preferred = str(self.settings.get('MIXED_PRECISION', 'fp16')).lower()
-        if preferred in ('bf16', 'bfloat16') and not check_bf16_support():
-            config.runtime_precision = 'fp16'
+    def select_script(self, scripts_dir: Path) -> KohyaConfig:
+        name = "sdxl_train_network.py" if self.params.model_family == "SDXL" else "train_network.py"
+        script = scripts_dir / name
+        if not script.is_file():
+            raise RuntimeError(f"找不到 {script}。请检查设置中的 sd-scripts 路径。")
+        precision = str(self.settings.get("MIXED_PRECISION", "fp16")).lower()
+        if precision in ("bf16", "bfloat16") and check_bf16_support(self.torch):
+            return KohyaConfig(script, runtime_precision="bf16")
+        if precision in ("bf16", "bfloat16"):
             self.callbacks.log("GPU 不支持 bfloat16，自动降级为 fp16")
-        else:
-            config.runtime_precision = preferred if preferred in ('bf16', 'bfloat16') else 'fp16'
-        
-        return config
-    
-    def prepare_dataset(self, train_dir: Path, output_dir: Path) -> Path:
-        """准备数据集配置"""
-        dataset_dir = train_dir / "dataset"
-        
-        if dataset_dir.exists():
-            images = filter_images_with_captions(dataset_dir)
-            self.callbacks.log(f"检测到 {len(images)} 张有标签的图片")
-            
-            if not images:
-                raise RuntimeError("没有找到有标签的图片，请先为图片添加标签")
-            
-            # 创建临时数据集目录
-            temp_dir = output_dir / "temp_dataset"
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir)
-            temp_dir.mkdir(exist_ok=True)
-            
-            for img in images:
-                shutil.copy2(img, temp_dir / img.name)
-                caption = img.with_suffix(".txt")
-                shutil.copy2(caption, temp_dir / caption.name)
-            
-            image_dir = temp_dir
-            self.callbacks.log(f"已创建临时数据集目录，包含 {len(images)} 张图片")
-        else:
-            image_dir = train_dir.resolve()
-        
-        # 生成数据集配置
-        config_path = output_dir / "dataset_config_auto.toml"
-        config_content = f"""[general]
-shuffle_caption = false
-enable_bucket = true
-bucket_no_upscale = false
-bucket_reso_steps = 64
-caption_extension = ".txt"
+        return KohyaConfig(script, runtime_precision="fp16")
 
-[[datasets]]
-resolution = {self.params.image_size}
-min_bucket_reso = 64
-max_bucket_reso = 2048
+    def prepare_dataset(self, images: List[Path], work_dir: Path, captions_dir: Path, stop_event=None):
+        """Snapshot exactly the selected images, and fingerprint the pairs for safe resume."""
+        image_dir = work_dir / "dataset"
+        image_dir.mkdir()
+        digest = hashlib.sha256()
+        count = 0
+        for img in sorted(images):
+            if stop_event and stop_event.is_set():
+                raise RuntimeError("训练已取消")
+            caption_file = img.with_suffix(".txt")
+            if not caption_file.is_file():
+                caption_file = captions_dir / caption_file.name
+            if not caption_file.is_file():
+                continue
+            text = caption_file.read_text(encoding="utf-8-sig").strip()
+            if not is_valid_caption(text):
+                continue
+            # Canonical names also avoid stem collisions between uploaded formats.
+            target = image_dir / f"{count:08d}{img.suffix.lower()}"
+            shutil.copyfile(img, target)
+            target.with_suffix(".txt").write_text(text, encoding="utf-8")
+            with target.open("rb") as f:
+                pair_hash = hashlib.sha256()
+                for block in iter(lambda: f.read(1024 * 1024), b""):
+                    pair_hash.update(block)
+            digest.update(pair_hash.digest())
+            digest.update(hashlib.sha256(text.encode()).digest())
+            count += 1
+        if not count:
+            raise RuntimeError("没有找到有标签的图片，请先为图片添加标签")
+        # CLI supplies bucket, resolution and batch options; TOML must not override them.
+        config = work_dir / "dataset.toml"
+        config.write_text(
+            '[general]\ncaption_extension = ".txt"\n[[datasets]]\n[[datasets.subsets]]\n'
+            + f'image_dir = {json.dumps(image_dir.as_posix(), ensure_ascii=False)}\nnum_repeats = 1\n',
+            encoding="utf-8",
+        )
+        self.callbacks.log(f"本次训练使用 {count} 张已标注图片")
+        return config, digest.hexdigest()
 
-  [[datasets.subsets]]
-  image_dir = "{image_dir.as_posix()}"
-  num_repeats = 1
-"""
-        config_path.write_text(config_content, encoding="utf-8")
-        self.callbacks.log(f"已生成数据集配置: {config_path}")
-        
-        return config_path
-    
     def setup_environment(self) -> dict:
         """设置环境变量"""
         env = os.environ.copy()
         
-        env['HF_HOME'] = str(Path(self.settings.get('HF_HOME', '.hf')).resolve())
-        env['TRANSFORMERS_CACHE'] = str(Path(self.settings.get('TRANSFORMERS_CACHE', '.hf/hub')).resolve())
+        env['HF_HOME'] = str(resolve_project_path(self.settings.get('HF_HOME') or '.hf'))
+        if self.settings.get('TRANSFORMERS_CACHE'):
+            env['HF_HUB_CACHE'] = str(resolve_project_path(self.settings['TRANSFORMERS_CACHE']))
         env['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:64'
         env['CUDA_MODULE_LOADING'] = 'LAZY'
         env['PYTHONUNBUFFERED'] = '1'
         env['HF_HUB_ENABLE_HF_TRANSFER'] = '0'
         
-        # 代理设置
-        for key in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']:
-            if key not in env and os.environ.get(key):
-                env[key] = os.environ[key]
-        
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "HF_ENDPOINT"):
+            if self.settings.get(key):
+                env[key] = str(self.settings[key])
         # 日志网络配置
         hf_endpoint = env.get('HF_ENDPOINT', 'https://huggingface.co')
         self.callbacks.log(f"HF_ENDPOINT: {hf_endpoint}")
         
         return env
     
-    def run(self, train_dir: Path, save_every: int = 0, save_state: bool = False,
-            auto_resume: bool = False, optimizer_type: Optional[str] = None,
-            unet_lr: Optional[float] = None, text_encoder_lr: Optional[float] = None,
-            stop_event: Optional[threading.Event] = None) -> Path:
-        """执行训练"""
-        
-        kohya_path = Path(DEFAULT_KOHYA_SCRIPTS_DIR) / "train_network.py"
-        if not kohya_path.exists():
-            raise RuntimeError(f"找不到 sd-scripts: {kohya_path}")
-        
-        # 准备参数
+    def run(self, images: List[Path], captions_dir: Path, scripts_dir: Path,
+            model_name: Optional[str], save_every: int, save_state: bool, auto_resume: bool,
+            optimizer_type: Optional[str], unet_lr: Optional[float], text_encoder_lr: Optional[float],
+            stop_event: Optional[threading.Event]) -> Path:
         self.prepare_params()
-        kohya_config = self.select_script(kohya_path)
-        
-        # 输出路径
-        output_name = format_output_filename(
-            self.params.train_steps,
-            name=os.environ.get('EASYLORA_MODEL_NAME')
-        )
-        output_path = get_output_lora_path().with_name(output_name)
-        output_dir = output_path.parent
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 准备数据集
-        dataset_config = self.prepare_dataset(train_dir, output_dir)
-        
-        # 构建命令
-        builder = KohyaCommandBuilder(self.params, self.settings)
-        builder.build_base_command(
-            kohya_config.script_path, output_dir, 
-            output_path.stem, dataset_config
-        )
-        builder.add_precision(kohya_config.runtime_precision)
-        builder.add_bucket_settings()
-        builder.add_optimizer(optimizer_type, unet_lr, text_encoder_lr)
-        builder.add_save_settings(save_every, save_state, auto_resume, output_dir, output_path.stem)
-        builder.add_vram_optimizations(self.vram_config)
-        
-        if kohya_config.is_sdxl:
-            builder.add_sdxl_settings(kohya_config.use_legacy_sdxl)
-        
-        builder.add_extra_args()
-        
-        cmd = builder.get_command()
-        self.callbacks.log(f"启动训练: {kohya_config.script_path.name}")
-        
-        # 执行训练
-        env = self.setup_environment()
-        start_time = time.time()
-        
-        popen_kwargs = {
-            'stdout': subprocess.PIPE,
-            'stderr': subprocess.STDOUT,
-            'bufsize': 1,
-            'text': True,
-            'env': env
-        }
-        if os.name == 'nt':
-            popen_kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
-        
-        with subprocess.Popen(cmd, **popen_kwargs) as proc:
-            for line in proc.stdout:
-                line = line.rstrip()
-                self.callbacks.log(line)
-                
-                # 检查停止信号
+        config = self.select_script(scripts_dir)
+        name = format_output_filename(self.params.train_steps, name=model_name or "model")
+        output = get_output_lora_path().with_name(name).resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="easylora-") as tmp:
+            dataset, fingerprint = self.prepare_dataset(images, Path(tmp), captions_dir, stop_event)
+            builder = KohyaCommandBuilder(self.params, self.settings)
+            # Identity is independent of output date/target steps; another model,
+            # dataset or optimizer must never pick up this run's optimizer state.
+            identity = (model_name or "model", self.params.model_id, self.params.model_family,
+                        self.params.image_size, self.params.lora_rank, self.params.train_batch_size,
+                        self.params.gradient_accumulation_steps, self.params.learning_rate,
+                        config.runtime_precision, self.vram_config.low_vram_mode, optimizer_type,
+                        unet_lr, text_encoder_lr, self.settings.get("EXTRA_ARGS"),
+                        self.settings.get("DEFAULT_VAE_PATH"), fingerprint)
+            group = hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:24]
+            history = output.parent / ".easylora-runs" / group
+            checkpoint = find_resume_state(history, self.params.train_steps) if auto_resume else None
+            resume, start_step = checkpoint or (None, 0)
+            if auto_resume:
+                self.callbacks.log(f"从第 {start_step} 步恢复权重和优化器，还需 {self.params.train_steps-start_step} 步: {resume}"
+                                   if resume else "未找到此任务的可恢复状态，从头开始")
+            history.mkdir(parents=True, exist_ok=True)
+            run_dir = Path(tempfile.mkdtemp(prefix="run-", dir=history))
+            try:
+                if start_step:
+                    (run_dir / "start-step").write_text(str(start_step), encoding="ascii")
+                builder.build_base_command(config.script_path, run_dir, "adapter", dataset, start_step)
+                builder.add_precision(config.runtime_precision).add_bucket_settings()
+                builder.add_optimizer(optimizer_type, unet_lr, text_encoder_lr)
+                builder.add_save_settings(save_every, save_state, resume)
+                builder.add_vram_optimizations(self.vram_config).add_extra_args()
+                self.callbacks.log(f"启动 {self.params.model_family} 训练: {config.script_path.name}")
+                if save_every or save_state:
+                    self.callbacks.log(f"检查点目录: {run_dir}")
+                self.run_process(builder.get_command(), stop_event, start_step)
+                final = run_dir / "adapter.safetensors"
+                validate_lora(final)
                 if stop_event and stop_event.is_set():
-                    self.callbacks.log("收到停止指令，终止训练...")
+                    raise RuntimeError("训练已取消")
+                final.replace(output)
+                cleanup_old_checkpoints(run_dir, "adapter", int(self.settings.get("MAX_MODELS_BEFORE_CLEAN", 0)))
+                return output
+            finally:
+                if not any(run_dir.glob("*-state")):
+                    (run_dir / "start-step").unlink(missing_ok=True)
+                if not any(run_dir.iterdir()):
+                    run_dir.rmdir()
+
+    def run_process(self, cmd: List[str], stop_event: Optional[threading.Event], start_step: int = 0):
+        if stop_event and stop_event.is_set():
+            raise RuntimeError("训练已取消")
+        start_time = time.monotonic()
+        flags = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+                 else {"start_new_session": True})
+        env = self.setup_environment()
+        env["PYTHONIOENCODING"] = "utf-8"
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, encoding="utf-8", errors="replace", env=env, **flags) as proc:
+            finished = threading.Event()
+
+            def cancel_if_requested():
+                while not finished.wait(0.15):
+                    if stop_event.is_set():
+                        kill_process_tree(proc)
+                        return
+
+            monitor = threading.Thread(target=cancel_if_requested, daemon=True) if stop_event is not None else None
+            if monitor:
+                monitor.start()
+            try:
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    self.callbacks.log(line)
+                    step = extract_progress(line, self.params.train_steps - start_step)
+                    if step is not None:
+                        step += start_step
+                        total = self.params.train_steps
+                        eta = extract_eta(line) or format_eta((total - step) * (time.monotonic() - start_time) / max(step - start_step, 1))
+                        self.callbacks.update_progress(step / total, eta, step, total)
+                proc.wait()
+            finally:
+                if proc.poll() is None:
                     kill_process_tree(proc)
-                    break
-                
-                # 解析进度
-                step = extract_progress(line, self.params.train_steps)
-                if step is not None:
-                    eta = extract_eta(line)
-                    if not eta:
-                        elapsed = time.time() - start_time
-                        remaining = (self.params.train_steps - step) * (elapsed / max(1, step))
-                        eta = format_eta(remaining)
-                    self.callbacks.update_progress(
-                        step / self.params.train_steps, 
-                        eta, step, self.params.train_steps
-                    )
-        
-        if proc.returncode != 0:
-            raise RuntimeError(f"训练失败，退出码 {proc.returncode}")
-        
-        # 验证输出
-        if not output_path.exists():
-            candidates = list(output_dir.glob(f"{output_path.stem}*.safetensors"))
-            if candidates:
-                candidates[0].rename(output_path)
-        
-        if not output_path.exists():
-            raise RuntimeError("训练未生成 LoRA 权重文件")
-        
-        # 清理旧模型
-        max_keep = int(self.settings.get('MAX_MODELS_BEFORE_CLEAN', 0))
-        cleanup_old_checkpoints(output_dir, output_path.stem, max_keep)
-        
-        return output_path
+                finished.set()
+                if monitor:
+                    monitor.join()
+            if stop_event and stop_event.is_set():
+                raise RuntimeError("训练已取消")
+            if proc.returncode:
+                raise RuntimeError(f"训练失败，退出码 {proc.returncode}；请查看上方 sd-scripts 日志")
+
+
+def find_resume_state(history: Path, target_steps: int) -> Optional[tuple[Path, int]]:
+    """Take the newest complete state for this dataset/configuration, never a prefix match."""
+    candidates = []
+    saw_state = False
+    for state in history.glob("run-*/adapter*-state"):
+        if state.name != "adapter-state" and not re.fullmatch(r"adapter-step[0-9]+-state", state.name):
+            continue
+        saw_state = True
+        # Accelerate writes random_states_0.pkl after the model/optimizer/scheduler;
+        # train_state.json alone is written by a pre-save hook and may be incomplete.
+        files = ("train_state.json", "model.safetensors", "optimizer.bin", "scheduler.bin", "random_states_0.pkl")
+        if not all((state / f).is_file() and (state / f).stat().st_size > 0 for f in files):
+            continue
+        try:
+            step = int(json.loads((state / "train_state.json").read_text(encoding="utf-8"))["current_step"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        offset = state.parent / "start-step"
+        if offset.is_file():
+            step += int(offset.read_text(encoding="ascii"))
+        if step > 0:
+            candidates.append((state.stat().st_mtime_ns, step, str(state), state))
+    if not candidates:
+        if saw_state:
+            raise RuntimeError("找到检查点目录，但没有完整可恢复的训练状态；请检查日志或关闭自动续训后重新开始")
+        return None
+    _, step, _, path = max(candidates)
+    if step >= target_steps:
+        raise RuntimeError(f"检查点已完成 {step} 步；续训目标须更大，或关闭自动续训重新训练")
+    return path, step
 
 
 # ============== 主训练函数 ==============
@@ -663,6 +639,8 @@ def train_lora(
     unet_lr: Optional[float] = None,
     text_encoder_lr: Optional[float] = None,
     stop_event: Optional[threading.Event] = None,
+    model_name: Optional[str] = None,
+    base_model: Optional[str] = None,
 ) -> Path:
     """执行 LoRA 训练
     
@@ -681,83 +659,42 @@ def train_lora(
     """
     settings = get_settings()
     
-    # 计算实际图片数量
-    dataset_dir = processed_dir / "dataset"
-    if dataset_dir.exists():
-        filtered = filter_images_with_captions(dataset_dir)
-        actual_count = len(filtered)
-    else:
-        actual_count = len(image_paths)
-    
-    # 选择训练参数
-    sdxl_threshold = int(settings.get('RES_THRESHOLD_SDXL', 900))
-    
-    if avg_long_side >= sdxl_threshold:
+    actual_count = len(image_paths)
+    if base_model is not None and base_model not in {"SD1.5", "SD2.1", "SDXL"}:
+        raise ValueError(f"未知模型类型: {base_model}")
+    if base_model == "SDXL" or (base_model is None and avg_long_side >= int(settings["RES_THRESHOLD_SDXL"])):
         params = auto_params_sdxl(actual_count)
-        callbacks.log("检测为 SDXL 任务")
     else:
-        image_size = auto_select_image_size(avg_long_side)
+        image_size = {"SD1.5": 512, "SD2.1": 768}.get(base_model, auto_select_image_size(avg_long_side))
         params = auto_params_by_dataset(actual_count, image_size)
-    
-    # 应用覆盖参数
     if override_steps and override_steps > 0:
         params.train_steps = override_steps
     if override_lr and override_lr > 0:
         params.learning_rate = override_lr
-    
-    callbacks.log(f"尺寸: {params.image_size}, 模型: {params.model_id}")
-    callbacks.log(f"步数: {params.train_steps}, 学习率: {params.learning_rate}, LoRA rank: {params.lora_rank}")
-    callbacks.log(f"图片数量: {actual_count}")
-    
-    # 检查 CUDA
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if device != "cuda":
-        callbacks.log("警告: 未检测到 CUDA，训练可能很慢")
-    
-    # 检查 kohya sd-scripts
-    kohya_available = False
-    if DEFAULT_KOHYA_SCRIPTS_DIR:
-        kohya_path = Path(DEFAULT_KOHYA_SCRIPTS_DIR) / "train_network.py"
-        kohya_available = kohya_path.exists()
-    
-    if kohya_available:
-        callbacks.log("使用 sd-scripts 进行训练...")
-        
-        save_every = override_save_every if override_save_every is not None else settings.get("DEFAULT_SAVE_EVERY", 0)
-        auto_resume = override_auto_resume if override_auto_resume is not None else settings.get("DEFAULT_AUTO_RESUME", False)
-        save_state = override_save_state or (save_every > 0) or auto_resume
-        
-        trainer = KohyaTrainer(params, callbacks)
-        output = trainer.run(
-            train_dir=processed_dir,
-            save_every=save_every,
-            save_state=save_state,
-            auto_resume=auto_resume,
-            optimizer_type=optimizer_type,
-            unet_lr=unet_lr,
-            text_encoder_lr=text_encoder_lr,
-            stop_event=stop_event,
-        )
-        
-        # 复制到 SD WebUI
-        if settings.get("COPY_TO_SD_WEBUI_ON_FINISH", True) and sd_webui_lora_dir and output.exists():
-            sd_webui_lora_dir.mkdir(parents=True, exist_ok=True)
-            dst = sd_webui_lora_dir / output.name
-            shutil.copy2(output, dst)
-            callbacks.log(f"已复制到 WebUI LoRA 目录: {dst}")
-        
-        callbacks.update_progress(1.0, "00:00")
-        return output
-    
-    # 回退到 diffusers 简化训练（仅作为 MVP 占位）
-    callbacks.log("sd-scripts 不可用，使用简化训练模式...")
-    
-    output_path = get_output_lora_path()
-    try:
-        import safetensors.torch as st
-        st.save_file({"dummy": torch.randn(4, 4)}, str(output_path))
-    except Exception:
-        output_path.write_bytes(b"placeholder")
-    
+    callbacks.log(f"{params.model_family} | {params.model_id} | {params.image_size}px | {params.train_steps} 步 | rank {params.lora_rank}")
+    scripts = settings.get("DEFAULT_KOHYA_SCRIPTS_DIR")
+    if not scripts or not resolve_project_path(scripts).is_dir():
+        raise RuntimeError("未找到 kohya-ss/sd-scripts。请按 README 安装并在设置中指定脚本目录。")
+    save_every = override_save_every if override_save_every is not None else int(settings.get("DEFAULT_SAVE_EVERY", 0))
+    auto_resume = override_auto_resume if override_auto_resume is not None else settings.get("DEFAULT_AUTO_RESUME", False)
+    save_state = override_save_state if override_save_state is not None else (save_every > 0 or auto_resume)
+    trainer = KohyaTrainer(params, callbacks)
+    output = trainer.run(image_paths, captions_dir, resolve_project_path(scripts), model_name,
+                         save_every, save_state, auto_resume, optimizer_type, unet_lr, text_encoder_lr, stop_event)
+    if settings.get("COPY_TO_SD_WEBUI_ON_FINISH", True) and sd_webui_lora_dir:
+        dst = sd_webui_lora_dir / output.name
+        if dst.resolve() != output.resolve():
+            try:
+                sd_webui_lora_dir.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(dir=sd_webui_lora_dir, delete=False) as tmp:
+                    staged_copy = Path(tmp.name)
+                try:
+                    shutil.copyfile(output, staged_copy)
+                    staged_copy.replace(dst)
+                finally:
+                    staged_copy.unlink(missing_ok=True)
+                callbacks.log(f"已复制到 WebUI LoRA 目录: {dst}")
+            except OSError as exc:
+                callbacks.log(f"LoRA 已保存到 {output}，但复制到 WebUI 失败: {exc}")
     callbacks.update_progress(1.0, "00:00")
-    return output_path
+    return output

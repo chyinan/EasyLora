@@ -1,32 +1,4 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react'
-import OptimizedLazyImage from './OptimizedLazyImage'
-import { optimizeImageGrid } from '../utils/lightweightOptimizer'
-
-interface ImageItem {
-  id: string
-  src: string
-  alt?: string
-  thumbnail?: string
-  caption?: string
-  previewUrl?: string
-}
-
-interface OptimizedImageGridProps {
-  images: ImageItem[]
-  className?: string
-  itemClassName?: string
-  useThumbnails?: boolean
-  thumbnailSize?: number
-  thumbnailQuality?: number
-  columns?: number
-  gap?: number
-  onImageClick?: (image: ImageItem) => void
-  onImageLoad?: (image: ImageItem) => void
-  onImageError?: (image: ImageItem, error: any) => void
-  onRemove?: (id: string) => void
-}
-
-import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import OptimizedLazyImage from './OptimizedLazyImage'
 import { optimizeImageGrid } from '../utils/lightweightOptimizer'

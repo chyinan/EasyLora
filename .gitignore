@@ -73,3 +73,6 @@ logs/
 *.swp
 *.swo
 *~
+
+# Upstream trainer checked out locally
+/sd-scripts/

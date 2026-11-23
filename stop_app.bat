@@ -1,37 +1,12 @@
 @echo off
+setlocal
 chcp 65001 >nul
-echo ========================================
-echo           EasyLora 停止脚本
-echo ========================================
-echo.
 
-echo 正在停止所有相关进程...
+echo 如有训练在运行，请先回到网页点停止，等待训练退出。
+choice /C YN /N /M "关闭 EasyLora 启动窗口？[Y/N] "
+if errorlevel 2 exit /b 0
 
-:: 停止Python进程（后端）
-taskkill /f /im python.exe /t 2>nul
-if errorlevel 1 (
-    echo 没有找到运行中的Python进程
-) else (
-    echo ✓ 已停止Python后端进程
-)
-
-:: 停止Node.js进程（前端）
-taskkill /f /im node.exe /t 2>nul
-if errorlevel 1 (
-    echo 没有找到运行中的Node.js进程
-) else (
-    echo ✓ 已停止Node.js前端进程
-)
-
-:: 关闭相关的命令行窗口
-taskkill /f /fi "WINDOWTITLE eq EasyLora Backend*" 2>nul
-taskkill /f /fi "WINDOWTITLE eq EasyLora Frontend*" 2>nul
-
-echo.
-echo ========================================
-echo           停止完成！
-echo ========================================
-echo 所有EasyLora相关进程已停止
-echo.
-echo 按任意键退出...
-pause >nul 
+rem 只处理 EasyLora 启动器创建的 cmd 窗口，不结束系统中其他 Python 或 Node 任务。
+taskkill /F /T /IM cmd.exe /FI "WINDOWTITLE eq EasyLora Backend*" 2>nul
+taskkill /F /T /IM cmd.exe /FI "WINDOWTITLE eq EasyLora Frontend*" 2>nul
+echo 如启动窗口仍在运行，请分别在其中按 Ctrl+C 后关闭。

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { validateImageForTraining, cleanupPreviewUrl } from './utils/imageCache'
-import { checkExistingCaptions, syncCaptionsToLocal } from './utils/captionSync'
+import { easyLoraApi } from './utils/apiClient'
 import { SortOption, sortImages } from './ui/SortOptions'
 
 export type BaseModel = 'SD1.5' | 'SD2.1' | 'SDXL'
@@ -40,14 +40,13 @@ interface UIState {
   set: (partial: Partial<UIState>) => void
   addLog: (line: string) => void
   addFiles: (files: File[]) => void
-  removeItem: (id: string) => void
+  removeItem: (id: string) => Promise<boolean>
   clearDataset: () => void
   resetProgress: () => void
   setSettings: (s: any) => void
   cleanupPreviewUrls: () => void
   updateItemCaption: (id: string, caption: string) => void
   markItemAsProcessed: (id: string) => void
-  syncExistingCaptions: () => void
   loadRawUploads: () => void
   reorderDataset: (newOrder: DatasetItem[]) => void
   setSortOption: (option: SortOption) => void
@@ -62,7 +61,7 @@ export const useUI = create<UIState>()(
       trainSteps: 1200,
       saveEverySteps: 0,
       autoResume: true,
-      optimizerType: 'AdamW8bit',
+      optimizerType: 'AdamW',
       unetLr: 0,
       textEncoderLr: 0,
       uploading: false,
@@ -78,6 +77,8 @@ export const useUI = create<UIState>()(
       set: (partial) => set(partial),
       addLog: (line) => set({ logs: [...get().logs, line].slice(-500) }),
       addFiles: async (files) => {
+        if (get().uploading) return
+        set({ uploading: true })
         const items = []
         const warnings: string[] = []
         
@@ -102,7 +103,8 @@ export const useUI = create<UIState>()(
             })
             
             if (!response.ok) {
-              throw new Error(`上传失败: ${response.status}`)
+              const error = await response.json().catch(() => ({}))
+              throw new Error(error.detail || error.error || `上传失败: ${response.status}`)
             }
             
             const result = await response.json()
@@ -122,72 +124,39 @@ export const useUI = create<UIState>()(
             id: `${file.name}-${Math.random().toString(36).slice(2)}`,
             file: file,
             filename: file.name,
+            isRaw: true,
             previewUrl: URL.createObjectURL(file),
           })
         }
         
         if (warnings.length > 0) {
-          console.warn('图片验证警告:', warnings)
+          get().addLog(warnings.join('\n'))
         }
         
-        set({ dataset: [...get().dataset, ...items] })
+        set({ dataset: [...get().dataset, ...items], uploading: false })
       },
-      removeItem: (id) => {
+      removeItem: async (id) => {
         const item = get().dataset.find(d => d.id === id)
-        if (item) {
+        const name = item?.filename ?? item?.file?.name
+        if (!item || !name) return false
+        try {
+          if (item.isProcessed) await easyLoraApi.deleteImage(name)
+          else await easyLoraApi.deleteRawImage(name)
           cleanupPreviewUrl(item.previewUrl)
-          
-          // 立即从UI中移除，提升响应速度
-          set({ dataset: get().dataset.filter((d) => d.id !== id) })
-          
-          // 如果是已处理的图片，在后台异步删除文件
-          if (item.isProcessed) {
-            const filename = item.file ? item.file.name : item.filename
-            if (filename) {
-              // 使用setTimeout让删除操作不阻塞UI
-              setTimeout(() => {
-                fetch('/api/delete-image', {
-                  method: 'DELETE',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ filename })
-                }).catch(error => {
-                  console.error('删除图片文件失败:', error)
-                  // 如果删除失败，可以考虑重新添加到UI中
-                })
-              }, 0)
-            }
-          }
-          
-          // 如果是raw_uploads中的图片，在后台异步删除文件
-          if (item.isRaw) {
-            const filename = item.filename
-            if (filename) {
-              setTimeout(async () => {
-                try {
-                  const res = await fetch('/api/delete-raw-image', {
-                    method: 'DELETE',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filename })
-                  })
-                  if (!res.ok) {
-                    console.error('删除raw_uploads图片失败:', await res.text())
-                  }
-                } catch (error) {
-                  console.error('删除raw_uploads图片时发生错误:', error)
-                }
-              }, 0)
-            }
-          }
+          set({ dataset: get().dataset.filter(d => d.id !== id) })
+          return true
+        } catch (error) {
+          get().addLog(`${name}: ${error}`)
+          return false
         }
       },
-      clearDataset: () => {
-        // 清理所有预览URL
-        get().dataset.forEach(item => {
-          cleanupPreviewUrl(item.previewUrl)
-        })
-        set({ dataset: [] })
+      clearDataset: async () => {
+        // This control belongs to the raw gallery; never erase captioned training images.
+        for (const item of get().dataset.filter(item => !item.isProcessed)) {
+          await get().removeItem(item.id)
+        }
       },
-            resetProgress: () => set({ progress: 0, eta: '--:--', stepText: 'Idle' }),
+      resetProgress: () => set({ progress: 0, eta: '--:--', stepText: 'Idle' }),
       setSettings: (s) => {
         // 仅更新配置，不覆盖 autoResume 等用户手动修改的状态
         set((state) => ({
@@ -216,6 +185,8 @@ export const useUI = create<UIState>()(
             item.id === id ? { 
               ...item, 
               isProcessed: true,
+              isRaw: false,
+              previewUrl: item.previewUrl.startsWith('blob:') ? item.previewUrl : `/workspace/processed/dataset/${item.filename}`,
               // 为已处理的图片添加必要的属性，确保能正确显示
               filename: item.file ? item.file.name : item.filename,
               path: `/workspace/processed/dataset/${item.file ? item.file.name : item.filename}`
@@ -223,33 +194,6 @@ export const useUI = create<UIState>()(
           )
         })
       },
-      syncExistingCaptions: async () => {
-        try {
-          const existingImages = await checkExistingCaptions()
-          const currentDataset = get().dataset
-          
-          // 同步已存在的标签到本地状态
-          for (const existingImage of existingImages) {
-            const existingItem = currentDataset.find(item => 
-              item.file && item.file.name === existingImage.filename
-            )
-            
-            if (existingItem) {
-              // 更新已存在的项目
-              set({
-                dataset: currentDataset.map(item => 
-                  item.id === existingItem.id 
-                  ? { ...item, caption: existingImage.caption, isProcessed: true }
-                  : item
-                )
-              })
-            }
-          }
-        } catch (error) {
-          console.error('同步已存在标签失败:', error)
-        }
-      },
-      
       loadRawUploads: async () => {
         try {
           const res = await fetch('/api/raw-uploads')
@@ -259,7 +203,7 @@ export const useUI = create<UIState>()(
             
             // 过滤掉已经在dataset中的图片
             const currentDataset = get().dataset
-            const existingFilenames = new Set(currentDataset.map(item => item.file?.name))
+            const existingFilenames = new Set(currentDataset.map(item => item.file?.name ?? item.filename))
             
             const newRawItems = rawImages
               .filter((img: any) => !existingFilenames.has(img.filename))
@@ -267,7 +211,7 @@ export const useUI = create<UIState>()(
                 id: `raw-${img.filename}-${Math.random().toString(36).slice(2)}`,
                 file: null, // raw_uploads中的图片没有File对象
                 filename: img.filename,
-                previewUrl: `http://127.0.0.1:8000${img.path}`,
+                previewUrl: img.path,
                 isRaw: true,
                 caption: undefined
               }))

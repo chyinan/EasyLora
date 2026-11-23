@@ -66,7 +66,7 @@ async function request<T>(
       
       try {
         const errorData = await response.json()
-        errorMessage = errorData.detail || errorData.message || errorMessage
+        errorMessage = errorData.detail || errorData.error || errorData.message || errorMessage
         errorDetails = errorData
       } catch {
         // 无法解析 JSON，使用默认错误信息

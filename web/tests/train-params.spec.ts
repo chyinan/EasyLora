@@ -4,7 +4,7 @@ test('LR slider mapping reflects settings min/max', async ({ page }) => {
   await page.goto('/')
 
   // open settings and set min/max
-  await page.getByRole('button', { name: '⚙️' }).click()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.getByRole('button', { name: '训练默认值' }).click()
   const minInput = page.getByRole('spinbutton', { name: '学习率下限' })
   const maxInput = page.getByRole('spinbutton', { name: '学习率上限' })

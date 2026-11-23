@@ -53,7 +53,7 @@ English | [简体中文](./README.md)
 <td width="50%">
 
 ### 📦 One-Click Deploy
-- Auto-copy to WebUI on completion
+- Download completed weights, with optional copy to WebUI
 - Checkpoint saving
 - Complete logging
 
@@ -72,7 +72,7 @@ English | [简体中文](./README.md)
 | **Frontend** | React 18 + TypeScript + Vite + Tailwind CSS |
 | **Backend** | FastAPI + WebSocket + Pydantic |
 | **Training** | Kohya sd-scripts + PyTorch + CUDA |
-| **Tools** | bitsandbytes + accelerate + safetensors |
+| **Tools** | accelerate + safetensors |
 
 </div>
 
@@ -104,43 +104,25 @@ EasyLora/
 
 ### Requirements
 
-| Dependency | Version | Notes |
-|:---:|:---:|:---|
-| Python | 3.10+ | Virtual environment recommended |
-| Node.js | 18+ | Frontend build |
-| CUDA | 11.8+ | GPU acceleration (optional) |
-| VRAM | 6GB+ | 8GB+ recommended |
+- Python 3.11 and Node.js 22 LTS are recommended. FastAPI and the web UI can start without a GPU.
+- Real training requires a working NVIDIA CUDA setup, matching PyTorch, and Kohya sd-scripts. See the [RTX 5070 Ti installation, training, and inference smoke test](docs/rtx5070ti-smoke-test.md). Missing training prerequisites produce an error, never placeholder model weights.
 
-### 1️⃣ Start Backend
+### Start locally
 
-```bash
-# Create virtual environment
-python -m venv .venv
-
-# Activate (Windows)
-.\.venv\Scripts\activate
-
-# Activate (Linux/Mac)
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Start server
-python server.py
-```
-
-> 🌐 Backend URL: `http://127.0.0.1:8000`
-
-### 2️⃣ Start Frontend
-
-```bash
-cd web
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Push-Location web
 npm ci
-npm run dev
+Pop-Location
+.\start_app.bat
 ```
 
-> 🌐 Frontend URL: `http://127.0.0.1:5173`
+Alternatively, use the environment's Python to run `python server.py` in the repository root, and `npm run dev -- --strictPort` in `web` in another terminal. On Linux use `.venv/bin/python`. The UI is at `http://localhost:5173`; the API is at `http://127.0.0.1:8000`. Stop active training in the UI before closing the launch windows.
+
+### Local checks
+
+From the repository root run `python -m pip install -r requirements-dev.txt` and `python -m pytest`. Then run `npm ci` and `npm run build` in `web`. These checks do not require a base model; test GPU training and inference separately using the linked guide.
 
 ---
 
@@ -176,7 +158,7 @@ graph LR
 |:---|:---:|:---|
 | Learning Rate | 5 (medium) | 1-10 scale, auto-mapped |
 | Training Steps | 1200 | Adjust based on image count |
-| Optimizer | AdamW8bit | Recommended for low VRAM |
+| Optimizer | AdamW | Recommended for the first smoke test |
 | Save Interval | 200 | 0 = save final only |
 
 ### Step 4: Start Training 🚀
@@ -233,7 +215,9 @@ graph LR
 | `POST` | `/api/update-caption` | Update caption |
 | `GET` | `/api/processed-images` | List processed images |
 | `POST` | `/api/stop` | Stop training |
-| `WS` | `/ws/train` | Training progress stream |
+| `GET` | `/api/training-status` | Read current/latest job without starting training |
+| `GET` | `/api/training-result/{job_id}` | Download the latest completed job’s weights |
+| `WS` | `/ws/train` | Start a job and stream its progress |
 
 </details>
 
@@ -274,9 +258,9 @@ npm run test:e2e
 ## 📝 FAQ
 
 <details>
-<summary><b>Q: First startup is slow?</b></summary>
+<summary><b>Q: First training run is slow?</b></summary>
 
-A: Model weights need to be downloaded, and data is preprocessed to `workspace/processed/` on first run.
+A: The Web UI starts without model downloads. The first training run may download model or text encoder components and stages a temporary dataset for that run.
 
 </details>
 
