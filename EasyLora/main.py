@@ -23,7 +23,7 @@ from .config import (
     ensure_dirs,
     resolve_sd_webui_lora_dir,
 )
-from .data_utils import list_images, compute_avg_long_side, process_and_save
+from .data_utils import training_dataset
 from .train import train_lora, TrainCallbacks
 
 
@@ -45,31 +45,22 @@ class TrainWorker(QtCore.QRunnable):
     def run(self):
         try:
             self.signals.log.emit("开始数据预处理...")
-            images = list_images(self.input_dir)
-            if not images:
-                raise RuntimeError("未在该目录找到图片文件。支持：jpg/jpeg/png/webp/bmp")
-
-            avg_long = compute_avg_long_side(images)
-            processed_dir, captions_dir, saved_images = process_and_save(
-                images, target_size=512 if avg_long < 700 else 768, augment_factor=1
-            )
-
-            self.signals.log.emit(f"已处理图片 {len(saved_images)} 张。开始训练...")
-
             def cb_log(msg: str):
                 self.signals.log.emit(msg)
 
-            def cb_progress(p: float, eta: Optional[str]):
+            def cb_progress(p: float, eta: Optional[str], *_details):
                 self.signals.progress.emit(float(p), eta or "--:--")
 
-            output = train_lora(
-                processed_dir=processed_dir,
-                captions_dir=captions_dir,
-                image_paths=saved_images,
-                avg_long_side=avg_long,
-                sd_webui_lora_dir=self.sd_lora_dir,
-                callbacks=TrainCallbacks(log=cb_log, update_progress=cb_progress),
-            )
+            with training_dataset(self.input_dir, None) as (processed_dir, captions_dir, saved_images, avg_long):
+                self.signals.log.emit(f"已处理图片 {len(saved_images)} 张。开始训练...")
+                output = train_lora(
+                    processed_dir=processed_dir,
+                    captions_dir=captions_dir,
+                    image_paths=saved_images,
+                    avg_long_side=avg_long,
+                    sd_webui_lora_dir=self.sd_lora_dir,
+                    callbacks=TrainCallbacks(log=cb_log, update_progress=cb_progress),
+                )
 
             self.signals.finished.emit(str(output))
         except Exception as e:

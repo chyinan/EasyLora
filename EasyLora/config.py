@@ -22,19 +22,26 @@ import datetime
 import re
 
 
-USER_SETTINGS_PATH = Path("user_settings.json")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+USER_SETTINGS_PATH = PROJECT_ROOT / "user_settings.json"
+
+
+def resolve_project_path(value: str | Path) -> Path:
+    """Relative local paths are rooted at the checkout, as in start_app.bat."""
+    return (PROJECT_ROOT / Path(value).expanduser()).resolve()
+
 
 _DEFAULT_SETTINGS: Dict[str, Any] = {
     # 路径/导出
     "DEFAULT_OUTPUT_DIR": "outputs",
     "OUTPUT_LORA_FILENAME": "{name}_{steps}.safetensors",  # 可为模式，如 custom_lora_{date}_{steps}.safetensors
-    "DEFAULT_SD_WEBUI_LORA_DIR": r"D:\Software\sd-webui-aki-v4.9\models\Lora",
-    "COPY_TO_SD_WEBUI_ON_FINISH": True,
-    "DEFAULT_MODEL_512": r"D:\Software\sd-webui-aki-v4.9\models\Stable-diffusion\waiNSFWIllustrious_v140.safetensors",
-    "DEFAULT_MODEL_768": r"D:\Software\sd-webui-aki-v4.9\models\Stable-diffusion\waiNSFWIllustrious_v140.safetensors",
-    "DEFAULT_MODEL_SDXL": r"D:\Program\EasyLora\.hf\sdxl-base",
+    "DEFAULT_SD_WEBUI_LORA_DIR": "",
+    "COPY_TO_SD_WEBUI_ON_FINISH": False,
+    "DEFAULT_MODEL_512": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+    "DEFAULT_MODEL_768": "sd2-community/stable-diffusion-2-1",
+    "DEFAULT_MODEL_SDXL": "stabilityai/stable-diffusion-xl-base-1.0",
     "DEFAULT_WORKSPACE_DIR": "workspace",
-    "DEFAULT_KOHYA_SCRIPTS_DIR": r"D:\Software\sd-scripts-0.9.1",
+    "DEFAULT_KOHYA_SCRIPTS_DIR": "sd-scripts",
     "DEFAULT_VAE_PATH": "",
 
     # 训练默认值
@@ -59,8 +66,8 @@ _DEFAULT_SETTINGS: Dict[str, Any] = {
 
     # 下载与网络
     "HF_ENDPOINT": "",
-    "HF_HOME": str((Path(".") / ".hf").resolve()),
-    "TRANSFORMERS_CACHE": str((Path(".") / ".hf" / "hub").resolve()),
+    "HF_HOME": str(PROJECT_ROOT / ".hf"),
+    "TRANSFORMERS_CACHE": str(PROJECT_ROOT / ".hf" / "hub"),
     "HTTP_PROXY": "",
     "HTTPS_PROXY": "",
     "ONLY_DOWNLOAD_ESSENTIAL": True,
@@ -70,7 +77,7 @@ _DEFAULT_SETTINGS: Dict[str, Any] = {
     "MIXED_PRECISION": "fp16",  # fp16/bf16
     "USE_XFORMERS": False,
     "USE_SDPA": True,
-    "GRADIENT_CHECKPOINTING": False,
+    "GRADIENT_CHECKPOINTING": True,
     "ENABLE_BUCKET": True,
     "BUCKET_RESO_STEPS": 64,
     "MIN_BUCKET_RESO": 64,
@@ -106,31 +113,26 @@ def get_settings() -> Dict[str, Any]:
 
 def save_settings(new_settings: Dict[str, Any]) -> None:
     global _settings_cache
-    merged = {**_DEFAULT_SETTINGS, **(new_settings or {})}
-    try:
-        USER_SETTINGS_PATH.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        # 尝试降级写入
-        try:
-            USER_SETTINGS_PATH.write_text(json.dumps(merged), encoding="utf-8")
-        except Exception:
-            pass
+    merged = {**get_settings(), **(new_settings or {})}
+    pending = USER_SETTINGS_PATH.with_suffix(".json.tmp")
+    pending.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    pending.replace(USER_SETTINGS_PATH)
     _settings_cache = merged
 
 
 # 以下常量均通过设置派生（保持原有导出名称，避免影响现有代码）
 _S = get_settings()
 
-DEFAULT_OUTPUT_DIR = Path(_S["DEFAULT_OUTPUT_DIR"]).expanduser()
-DEFAULT_WORKSPACE_DIR = Path(_S["DEFAULT_WORKSPACE_DIR"]).expanduser()
+DEFAULT_OUTPUT_DIR = resolve_project_path(_S["DEFAULT_OUTPUT_DIR"])
+DEFAULT_WORKSPACE_DIR = resolve_project_path(_S["DEFAULT_WORKSPACE_DIR"])
 DEFAULT_PROCESSED_DIR = DEFAULT_WORKSPACE_DIR / "processed"
 DEFAULT_CAPTIONS_DIR = DEFAULT_WORKSPACE_DIR / "captions"
 
 DEFAULT_MODEL_512 = _S["DEFAULT_MODEL_512"]
 DEFAULT_MODEL_768 = _S["DEFAULT_MODEL_768"]
 DEFAULT_MODEL_SDXL = _S["DEFAULT_MODEL_SDXL"]
-DEFAULT_SD_WEBUI_LORA_DIR = Path(_S["DEFAULT_SD_WEBUI_LORA_DIR"]).expanduser()
-DEFAULT_KOHYA_SCRIPTS_DIR: Optional[Path] = Path(_S["DEFAULT_KOHYA_SCRIPTS_DIR"]).expanduser() if _S.get("DEFAULT_KOHYA_SCRIPTS_DIR") else None
+DEFAULT_SD_WEBUI_LORA_DIR = resolve_project_path(_S["DEFAULT_SD_WEBUI_LORA_DIR"]) if _S.get("DEFAULT_SD_WEBUI_LORA_DIR") else None
+DEFAULT_KOHYA_SCRIPTS_DIR: Optional[Path] = resolve_project_path(_S["DEFAULT_KOHYA_SCRIPTS_DIR"]) if _S.get("DEFAULT_KOHYA_SCRIPTS_DIR") else None
 OUTPUT_LORA_FILENAME = _S["OUTPUT_LORA_FILENAME"]
 
 
@@ -143,18 +145,26 @@ class AutoTrainParams:
     lora_rank: int
     train_batch_size: int
     gradient_accumulation_steps: int
+    model_family: str = "SD1.5"
+
+
+def _model_reference(setting: str) -> str:
+    value = str(get_settings().get(setting) or "").strip()
+    if not value:
+        raise ValueError(f"请先在设置中配置基础模型 {setting}（本地模型路径或 Hugging Face 模型 ID）")
+    local = resolve_project_path(value)
+    if local.exists():
+        return str(local)
+    if Path(value).is_absolute() or value.startswith((".", "~")) or Path(value).suffix.lower() in (".ckpt", ".safetensors"):
+        raise ValueError(f"找不到 {setting} 指定的本地模型: {local}")
+    return value  # preserve the configured Hub ID, do not substitute another model
 
 
 def auto_params_sdxl(num_images: int) -> AutoTrainParams:
     """为 SDXL 选择默认参数（显存友好）。"""
     s = get_settings()
     image_size = 1024
-    model_id = str(s.get("DEFAULT_MODEL_SDXL", DEFAULT_MODEL_SDXL))
-    # 检查模型路径是否存在，若不存在则回退到 HF ID
-    if not Path(model_id).exists():
-        # 尝试去掉 D: 前缀等（虽然 Path 应该能处理），或者只是简单检查
-        # 如果配置的是本地路径但找不到，则使用在线 ID
-        model_id = "stabilityai/stable-diffusion-xl-base-1.0"
+    model_id = _model_reference("DEFAULT_MODEL_SDXL")
 
     learning_rate = float(s.get("LR_SLIDER_MIN", 1e-5) + (s.get("LR_SLIDER_MAX", 1e-4) - s.get("LR_SLIDER_MIN", 1e-5)) * 0.5)
     lora_rank = int(s.get("DEFAULT_RANK_1024", 32))
@@ -162,6 +172,7 @@ def auto_params_sdxl(num_images: int) -> AutoTrainParams:
     gradient_accumulation_steps = int(s.get("DEFAULT_GRAD_ACCUM", 1))
     steps = int(s.get("DEFAULT_STEPS_1024", max(300, min(80 * max(1, num_images), 1500))))
     return AutoTrainParams(
+        model_family="SDXL",
         image_size=image_size,
         model_id=model_id,
         train_steps=steps,
@@ -205,15 +216,10 @@ def auto_params_by_dataset(num_images: int, image_size: int) -> AutoTrainParams:
 
     steps_default = int(s.get("DEFAULT_STEPS_512", 1500) if image_size == 512 else s.get("DEFAULT_STEPS_768", 1200))
     steps = max(300, min(100 * max(1, num_images), 2000)) if steps_default <= 0 else steps_default
-    model_id = str(DEFAULT_MODEL_512 if image_size == 512 else DEFAULT_MODEL_768)
-    # 同样检查 SD1.5/SD2.1 模型是否存在
-    if not Path(model_id).exists():
-        if image_size == 512:
-            model_id = "runwayml/stable-diffusion-v1-5"
-        else:
-            model_id = "stabilityai/stable-diffusion-2-1"
+    model_id = _model_reference("DEFAULT_MODEL_512" if image_size == 512 else "DEFAULT_MODEL_768")
 
     return AutoTrainParams(
+        model_family="SD1.5" if image_size == 512 else "SD2.1",
         image_size=image_size,
         model_id=model_id,
         train_steps=steps,
@@ -230,38 +236,26 @@ def ensure_dirs() -> None:
         p.mkdir(parents=True, exist_ok=True)
 
 
-def resolve_sd_webui_lora_dir(custom_path: Optional[str | Path]) -> Path:
-    """解析 SD WebUI 的 LoRA 目录，允许用户覆盖默认路径。"""
-    if custom_path is None or str(custom_path).strip() == "":
-        return DEFAULT_SD_WEBUI_LORA_DIR
-    return Path(custom_path).expanduser().resolve()
+def resolve_sd_webui_lora_dir(custom_path: Optional[str | Path]) -> Optional[Path]:
+    value = str(custom_path or get_settings().get("DEFAULT_SD_WEBUI_LORA_DIR") or "").strip()
+    return resolve_project_path(value) if value else None
 
 
 def get_output_lora_path(output_dir: Optional[str | Path] = None) -> Path:
-    base = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
+    base = resolve_project_path(output_dir or get_settings()["DEFAULT_OUTPUT_DIR"])
     base.mkdir(parents=True, exist_ok=True)
-    filename = OUTPUT_LORA_FILENAME
-    # 若包含模板变量，保持到后续格式化函数生成
-    return base / filename
+    return base / format_output_filename()
 
 
 def format_output_filename(steps: Optional[int] = None, name: Optional[str] = None) -> str:
     """根据设置生成输出文件名，支持 {date}、{steps}、{name} 模板。"""
     pattern = str(get_settings().get("OUTPUT_LORA_FILENAME", OUTPUT_LORA_FILENAME))
     now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    try:
-        out = pattern.replace("{date}", now)
-        if steps is not None:
-            out = out.replace("{steps}", str(int(steps)))
-        if name is not None:
-            safe = str(name).strip()
-            if safe == "":
-                safe = "model"
-            # 清洗为安全文件名：仅字母数字-_，空格转下划线
-            safe = re.sub(r"\s+", "_", safe)
-            safe = re.sub(r"[^A-Za-z0-9_\-]", "", safe)
-            out = out.replace("{name}", safe)
-        return out
-    except Exception:
-        return pattern
-
+    # Keep Unicode model names (including Chinese); remove filename punctuation.
+    safe = re.sub(r"[^\w-]+", "_", (name or "").strip(), flags=re.UNICODE).strip("_") or "model"
+    out = pattern.replace("{date}", now).replace("{name}", safe)
+    if steps is not None:
+        out = out.replace("{steps}", str(int(steps)))
+    if not out.lower().endswith(".safetensors") or any(c in out for c in '/\\:*?"<>|') or not out[:-12].strip(" ."):
+        raise ValueError("输出文件名必须是非空的 .safetensors 文件名（不能包含目录）")
+    return out

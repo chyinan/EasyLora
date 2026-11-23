@@ -27,8 +27,8 @@
 <td width="50%">
 
 ### 🚀 开箱即用
-- 无需复杂配置，一键启动
-- 自动检测 GPU / VRAM
+- 本机 Web 界面与训练服务
+- 检测 GPU / VRAM
 - 智能参数推荐
 
 </td>
@@ -53,7 +53,7 @@
 <td width="50%">
 
 ### 📦 一键部署
-- 训练完成自动复制到 WebUI
+- 训练产物可下载，按需配置复制到 WebUI
 - 中间检查点保存
 - 完整日志追踪
 
@@ -72,7 +72,7 @@
 | **前端** | React 18 + TypeScript + Vite + Tailwind CSS |
 | **后端** | FastAPI + WebSocket + Pydantic |
 | **训练** | Kohya sd-scripts + PyTorch + CUDA |
-| **工具** | bitsandbytes + accelerate + safetensors |
+| **工具** | accelerate + safetensors |
 
 </div>
 
@@ -104,43 +104,25 @@ EasyLora/
 
 ### 环境要求
 
-| 依赖 | 版本 | 说明 |
-|:---:|:---:|:---|
-| Python | 3.10+ | 建议使用虚拟环境 |
-| Node.js | 18+ | 前端构建 |
-| CUDA | 11.8+ | GPU 加速（可选） |
-| VRAM | 6GB+ | 推荐 8GB 以上 |
+- Python 3.11 和 Node.js 22 LTS 推荐。Web 界面和 FastAPI 可无 GPU 启动。
+- 训练需要可用的 NVIDIA CUDA、匹配的 PyTorch 和 Kohya sd-scripts。RTX 5070 Ti 请先按 [Blackwell 安装、最小训练与推理步骤](docs/rtx5070ti-smoke-test.md) 配置。未安装真实训练依赖时，训练会报错，不会生成占位权重。
 
-### 1️⃣ 启动后端
+### 本机启动
 
-```bash
-# 创建虚拟环境
-python -m venv .venv
-
-# 激活环境 (Windows)
-.\.venv\Scripts\activate
-
-# 激活环境 (Linux/Mac)
-source .venv/bin/activate
-
-# 安装依赖
-pip install -r requirements.txt
-
-# 启动服务
-python server.py
-```
-
-> 🌐 后端地址：`http://127.0.0.1:8000`
-
-### 2️⃣ 启动前端
-
-```bash
-cd web
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Push-Location web
 npm ci
-npm run dev
+Pop-Location
+.\start_app.bat
 ```
 
-> 🌐 前端地址：`http://127.0.0.1:5173`
+也可以从仓库根目录运行 `python server.py`（使用同一个虚拟环境），另一终端在 `web` 运行 `npm run dev -- --strictPort`。Linux 的虚拟环境解释器为 `.venv/bin/python`。前端默认是 `http://localhost:5173`，后端是 `http://127.0.0.1:8000`。先在网页停止训练，再关闭启动窗口。
+
+### 本地回归验证
+
+在仓库根目录运行 `python -m pip install -r requirements-dev.txt` 和 `python -m pytest`，再在 `web` 运行 `npm ci`、`npm run build`。这些测试不需要下载底模；GPU 训练和推理另按 RTX 5070 Ti 验证步骤执行。
 
 ---
 
@@ -176,7 +158,7 @@ graph LR
 |:---|:---:|:---|
 | 学习率 | 5 (中档) | 1-10 档位，自动映射 |
 | 训练步数 | 1200 | 根据图片数量调整 |
-| 优化器 | AdamW8bit | 低显存推荐 |
+| 优化器 | AdamW | 首次验证推荐 |
 | 保存间隔 | 200 | 0 = 仅保存最终 |
 
 ### Step 4: 开始训练 🚀
@@ -233,7 +215,9 @@ graph LR
 | `POST` | `/api/update-caption` | 更新标签 |
 | `GET` | `/api/processed-images` | 已处理图片列表 |
 | `POST` | `/api/stop` | 停止训练 |
-| `WS` | `/ws/train` | 训练进度推送 |
+| `GET` | `/api/training-status` | 查询当前或最近一次任务（不会启动训练） |
+| `GET` | `/api/training-result/{job_id}` | 下载最近一次完成任务的权重 |
+| `WS` | `/ws/train` | 启动一次训练并接收进度 |
 
 </details>
 
@@ -274,9 +258,9 @@ npm run test:e2e
 ## 📝 常见问题
 
 <details>
-<summary><b>Q: 首次启动很慢？</b></summary>
+<summary><b>Q: 第一次训练很慢？</b></summary>
 
-A: 需要下载模型权重，且首次会预处理数据到 `workspace/processed/`
+A: Web 界面不需要先下载底模。第一次训练可能下载底模或文本编码器组件，并为本次训练准备临时数据集。
 
 </details>
 

@@ -137,7 +137,7 @@ export default function CaptionEditor({ image, onClose, onSave }: CaptionEditorP
           <div className="space-y-4">
             <div className="text-sm text-gray-600">{t('ImagePreview')}</div>
             <img 
-              src={image.previewUrl || `http://127.0.0.1:8000${image.path}`} 
+              src={image.previewUrl || image.path}
               alt={image.file?.name || image.filename || t('ImagePreview')}
               className="w-full max-w-md rounded-lg border shadow-sm"
             />

@@ -15,15 +15,20 @@ data_utils.py
 
 from __future__ import annotations
 
-import math
+from contextlib import contextmanager
+import hashlib
+import re
+import shutil
+from tempfile import TemporaryDirectory
 import random
 from pathlib import Path
-from typing import Iterable, List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any
 
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageOps
 
 from .config import (
-    DEFAULT_CAPTIONS_DIR,
+    DEFAULT_WORKSPACE_DIR,
+    auto_select_image_size,
     DEFAULT_PROCESSED_DIR,
     get_settings,
 )
@@ -70,7 +75,7 @@ def pad_to_square(im: Image.Image, fill_color=(0, 0, 0)) -> Image.Image:
     return new_im
 
 
-def apply_offline_augmentations(im: Image.Image, settings: Dict[str, Any] = None) -> Image.Image:
+def apply_offline_augmentations(im: Image.Image, settings: Dict[str, Any], rng: random.Random) -> Image.Image:
     """对图像进行轻量增强。
     
     默认参数：
@@ -79,29 +84,26 @@ def apply_offline_augmentations(im: Image.Image, settings: Dict[str, Any] = None
     - 对比度在 [0.9, 1.1]
     - 旋转在 [-10, 10] 度，并使用黑边填充
     """
-    if settings is None:
-        settings = {}
-        
     img = im
     
     # 水平翻转
-    if random.random() < settings.get("aug_flip_prob", 0.5):
+    if rng.random() < settings.get("aug_flip_prob", 0.5):
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
 
     # 亮度
     brightness_range = settings.get("aug_brightness_range", 0.1)
-    brightness_factor = random.uniform(1.0 - brightness_range, 1.0 + brightness_range)
+    brightness_factor = rng.uniform(1.0 - brightness_range, 1.0 + brightness_range)
     img = ImageEnhance.Brightness(img).enhance(brightness_factor)
 
     # 对比度
     contrast_range = settings.get("aug_contrast_range", 0.1)
-    contrast_factor = random.uniform(1.0 - contrast_range, 1.0 + contrast_range)
+    contrast_factor = rng.uniform(1.0 - contrast_range, 1.0 + contrast_range)
     img = ImageEnhance.Contrast(img).enhance(contrast_factor)
 
     # 轻微旋转
     rotate_range = settings.get("aug_rotate_range", 10)
     if rotate_range > 0:
-        angle = random.uniform(-rotate_range, rotate_range)
+        angle = rng.uniform(-rotate_range, rotate_range)
         img = img.rotate(angle, expand=True, fillcolor=(0, 0, 0))
 
     # 旋转后再方形填充
@@ -132,24 +134,8 @@ def get_next_image_index(dataset_folder: Path) -> int:
 
 
 def is_valid_caption(caption: str) -> bool:
-    """检查标签内容是否有效"""
-    if not caption or not caption.strip():
-        return False
-    
-    caption_trimmed = caption.strip()
-    # 检查是否是默认的序号标签（只包含文件名，没有逗号分隔的标签）
-    # 例如: "img_0001" 是无效的，但 "img_0001, 1girl, solo" 是有效的
-    # 或者 "mysstyle, 1girl" 也是有效的
-    
-    # 规则1: 如果包含逗号且总长度超过20，通常是有效标签
-    if "," in caption_trimmed and len(caption_trimmed) > 20:
-        return True
-        
-    # 规则2: 如果不以 "img_" 开头且长度超过10，通常是有效标签
-    if not caption_trimmed.startswith("img_") and len(caption_trimmed) > 10:
-        return True
-        
-    return False
+    """Short trigger words are valid; only reject empty or old generated placeholders."""
+    return bool(caption and caption.strip() and not re.fullmatch(r"img_\d+(?:_aug\d+)?", caption.strip()))
 
 
 def filter_images_with_captions(dataset_dir: Path) -> List[Dict[str, Any]]:
@@ -197,6 +183,7 @@ def process_and_save(
     target_size: int,
     augment_factor: int = 1,
     captions_keyword: str | None = None,
+    *, processed_dir: Path | None = None,
 ) -> Tuple[Path, Path, List[Path]]:
     """处理图像并保存到工作区目录，返回 (processed_dir, captions_dir, saved_images)。
 
@@ -204,14 +191,9 @@ def process_and_save(
     captions_keyword: 如果提供，统一作为 caption；否则使用文件名生成。
     """
 
-    processed_dir = DEFAULT_PROCESSED_DIR
-    captions_dir = DEFAULT_CAPTIONS_DIR
-    processed_dir.mkdir(parents=True, exist_ok=True)
-    captions_dir.mkdir(parents=True, exist_ok=True)
-
-    # 创建 sd-scripts 期望的目录结构：processed_dir 下创建子文件夹
+    processed_dir = processed_dir or DEFAULT_PROCESSED_DIR
     dataset_folder = processed_dir / "dataset"
-    dataset_folder.mkdir(exist_ok=True)
+    dataset_folder.mkdir(parents=True, exist_ok=True)
 
     # 获取下一个图片序号
     next_index = get_next_image_index(dataset_folder)
@@ -230,14 +212,24 @@ def process_and_save(
         try:
             with Image.open(img_path) as im:
                 # 统一转换为 RGB，处理 RGBA/P 等格式
-                if im.mode != "RGB":
-                    im = im.convert("RGB")
+                im = ImageOps.exif_transpose(im).convert("RGB")
                 
                 # 方形填充并调整大小
                 base = pad_to_square(im)
                 base = base.resize((target_size, target_size), Image.BICUBIC)
-        except Exception:
-            continue
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"无法读取训练图片 {img_path.name}: {exc}") from exc
+
+        sidecar = img_path.with_suffix(".txt")
+        if captions_keyword and captions_keyword.strip():
+            caption = captions_keyword.strip()
+        elif sidecar.is_file():
+            caption = sidecar.read_text(encoding="utf-8-sig").strip()
+        else:
+            # Use the input name, not our numbered staging filename.
+            caption = re.sub(r"[_-]+", " ", img_path.stem).strip()
+        if not is_valid_caption(caption):
+            raise ValueError(f"请先为 {img_path.name} 添加非空标签")
 
         # 原图版本 - 使用连续的序号
         current_index = next_index + i
@@ -245,30 +237,52 @@ def process_and_save(
         out_path = dataset_folder / out_name
         base.save(out_path)
         saved.append(out_path)
-        _write_caption(out_path, dataset_folder, captions_keyword)
+        out_path.with_suffix(".txt").write_text(caption, encoding="utf-8")
 
         # 增强版本
+        # Resume fingerprints include the staged images. Augment the same source
+        # identically on retry, without seeding the training process's global RNG.
+        if augment_factor > 1:
+            source_digest = hashlib.sha256(base.tobytes()).hexdigest()
         for k in range(max(0, augment_factor - 1)):
-            aug = apply_offline_augmentations(base, aug_settings)
+            aug = apply_offline_augmentations(base, aug_settings, random.Random(f"{source_digest}:{k}"))
             out_name_aug = f"img_{current_index:04d}_aug{k+1}.png"
             out_path_aug = dataset_folder / out_name_aug
-            aug.save(out_path_aug)
+            aug.resize(base.size, Image.Resampling.BICUBIC).save(out_path_aug)
             saved.append(out_path_aug)
-            _write_caption(out_path_aug, dataset_folder, captions_keyword)
+            out_path_aug.with_suffix(".txt").write_text(caption, encoding="utf-8")
 
-    return processed_dir, captions_dir, saved
+    return processed_dir, dataset_folder, saved
 
 
-def _write_caption(image_path: Path, captions_dir: Path, keyword: str | None) -> None:
-    if keyword and keyword.strip():
-        text = keyword.strip()
-    else:
-        # 使用文件名（去掉扩展与后缀 aug）作为 tag，空格替换为逗号，简单规范化
-        stem = image_path.stem
-        stem = stem.replace("_aug", "").replace("-", " ")
-        words = [w for w in stem.split() if w]
-        text = ", ".join(words) if words else "person, style"
+@contextmanager
+def training_dataset(raw_dir: Path, dataset_dir: Path | None, model_family: str | None = None):
+    """Snapshot this run without adding generated images to the editable gallery."""
+    settings = get_settings()
+    annotated = filter_images_with_captions(dataset_dir) if dataset_dir else []
+    existing_names = {p.name for p in list_images(dataset_dir)} if dataset_dir else set()
+    raw = [p for p in list_images(raw_dir) if p.name not in existing_names]
+    originals = [item["path"] for item in annotated] + raw
+    if not originals:
+        raise ValueError("没有可用于训练的图片，请上传图片或先为图库中的图片保存非空标签")
+    avg = compute_avg_long_side(originals)
+    size = {"SD1.5": 512, "SD2.1": 768, "SDXL": 1024}.get(model_family)
+    if size is None:
+        size = 1024 if avg >= int(settings["RES_THRESHOLD_SDXL"]) else auto_select_image_size(avg)
 
-    # 使用图片文件名（img_****格式）来创建标签文件
-    caption_path = image_path.with_suffix('.txt')
-    caption_path.write_text(text, encoding="utf-8")
+    temp = DEFAULT_WORKSPACE_DIR / "temp"
+    temp.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="training-", dir=temp) as name:
+        root = Path(name)
+        images_dir = root / "dataset"
+        images_dir.mkdir()
+        images = []
+        for index, item in enumerate(annotated):
+            src = item["path"]
+            # Distinct stems also support an existing dataset with mixed image formats.
+            dest = images_dir / f"tagged_{index:04d}{src.suffix.lower()}"
+            shutil.copyfile(src, dest)
+            dest.with_suffix(".txt").write_text(item["caption"], encoding="utf-8")
+            images.append(dest)
+        _, _, generated = process_and_save(raw, size, int(settings.get("AUGMENT_FACTOR", 1)), processed_dir=root)
+        yield root, images_dir, images + generated, avg

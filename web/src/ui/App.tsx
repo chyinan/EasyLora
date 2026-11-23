@@ -3,6 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useTranslation } from 'react-i18next'
 import { useUI } from '../store'
 import Settings from './Settings'
+import StartTrainingButton from './StartTrainingButton'
 import CaptionEditor from './CaptionEditor'
 import { ErrorBoundary } from './ErrorBoundary'
 import DraggableImageGrid from './DraggableImageGrid'
@@ -92,7 +93,7 @@ const DatasetImageItem = React.memo(({ image }: { image: any }) => {
 // Memoized Processed Item Component
 const ProcessedImageItem = React.memo(({ image }: { image: any }) => {
   const { t } = useTranslation()
-  const src = image.previewUrl || `http://127.0.0.1:8000${image.path}`;
+  const src = image.previewUrl || image.path;
   return (
     <div className="relative h-full">
       <LazyImage 
@@ -113,25 +114,12 @@ const ProcessedImageItem = React.memo(({ image }: { image: any }) => {
 
 // 优化的上传区域组件
 function UploadArea() {
-  const { dataset, addFiles, removeItem, clearDataset, updateItemCaption, markItemAsProcessed, syncExistingCaptions, reorderDataset, sortOption, setSortOption } = useUI()
+  const { dataset, addFiles, removeItem, clearDataset, updateItemCaption, markItemAsProcessed, uploading, reorderDataset, sortOption, setSortOption } = useUI()
   const [selectedImage, setSelectedImage] = useState<any>(null)
   const [showSuccessTip, setShowSuccessTip] = useState(false)
   const { t } = useTranslation()
   
-  // 组件加载时同步已存在的标签和raw_uploads中的图片
-  useEffect(() => {
-    syncExistingCaptions()
-    // 加载raw_uploads中未处理的图片
-    const { loadRawUploads } = useUI.getState()
-    loadRawUploads()
-  }, [syncExistingCaptions])
-
-  // 组件卸载时清理预览URL
-  useEffect(() => {
-    return () => {
-      // 组件卸载时不需要清理，因为store中的清理逻辑已经处理了
-    }
-  }, [])
+  useEffect(() => { useUI.getState().loadRawUploads() }, [])
 
   const onDrop = useCallback(async (accepted: File[]) => {
     // 文件大小和类型验证
@@ -158,14 +146,11 @@ function UploadArea() {
     
     await addFiles(validFiles)
     
-    // 添加文件后同步已存在的标签
-    setTimeout(() => {
-      syncExistingCaptions()
-    }, 100)
-  }, [addFiles, syncExistingCaptions, t])
+  }, [addFiles, t])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
-    onDrop, 
+    onDrop,
+    disabled: uploading,
     accept: { 'image/*': [] },
     maxSize: 50 * 1024 * 1024, // 50MB
     multiple: true
@@ -176,7 +161,7 @@ function UploadArea() {
   }, [])
 
   const handleReorder = useCallback((newOrder: any[]) => {
-    reorderDataset(newOrder)
+    reorderDataset([...newOrder, ...useUI.getState().dataset.filter(item => item.isProcessed)])
   }, [reorderDataset])
 
   const handleSortChange = useCallback((option: SortOption) => {
@@ -261,10 +246,10 @@ function UploadArea() {
         </div>
       </div>
 
-      {dataset.length > 0 && (
+      {filteredDataset.length > 0 && (
         <>
            <div className="flex items-center justify-between mt-4">
-             <button className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200" onClick={clearDataset}>
+             <button className="px-4 py-2 bg-gray-100 rounded-xl hover:bg-gray-200" onClick={() => { if (window.confirm(t('ConfirmClearRaw'))) clearDataset() }}>
                {t('ClearData')}
              </button>
              <div className="flex items-center gap-4">
@@ -376,7 +361,8 @@ function ProcessedImagesPanel() {
         const data = await res.json()
         console.log('API response data:', data)
         
-        // 更新本地状态
+        const localItem = useUI.getState().dataset.find(item => item.isProcessed && (item.file?.name ?? item.filename) === filename)
+        if (localItem) useUI.getState().updateItemCaption(localItem.id, data.caption ?? finalCaption)
         setExistingProcessedImages(prev => 
           prev.map(img => 
             img.filename === filename 
@@ -412,8 +398,8 @@ function ProcessedImagesPanel() {
 
   // 合并新处理的图片和已存在的图片，避免重复，只显示有真正标签的图片
   const allProcessedImages = useMemo(() => {
-    const processedIds = new Set(processedImages.map(img => img.id))
-    const existingWithoutDuplicates = existingProcessedImages.filter(img => !processedIds.has(img.id))
+    const processedNames = new Set(processedImages.map(img => img.file?.name ?? img.filename))
+    const existingWithoutDuplicates = existingProcessedImages.filter(img => !processedNames.has(img.filename))
     
     // 为新处理的图片添加必要的属性，确保能正确显示
     const enhancedProcessedImages = processedImages.map(img => ({
@@ -429,52 +415,26 @@ function ProcessedImagesPanel() {
       filename: img.filename || 'unknown'  // 确保filename字段存在
     }))
     
-    // 只返回有真正标签内容的图片（排除只有默认序号的图片）
-    const allImages = [...enhancedProcessedImages, ...enhancedExistingImages]
-    return allImages.filter(img => {
-      if (!img.caption || img.caption.trim() === '') return false
-      
-      const caption = img.caption.trim()
-      // 检查是否是默认的序号标签（只包含文件名，没有逗号分隔的标签）
-      if (caption.includes(',') && caption.length > 20) {
-        // 有真正的标签内容（包含逗号且长度足够）
-        return true
-      } else if (!caption.startsWith('img_') && caption.length > 10) {
-        // 不是默认序号且长度足够
-        return true
-      }
-      return false
-    })
+    return [...enhancedProcessedImages, ...enhancedExistingImages]
   }, [processedImages, existingProcessedImages])
 
   const handleRemove = useCallback(async (id: string) => {
     const image = allProcessedImages.find(img => img.id === id)
     if (image) {
-      // 立即从UI中移除，提升响应速度
       if (image.isExisting) {
-        // 立即更新UI
-        setExistingProcessedImages(prev => prev.filter(img => img.id !== id))
-        
-        // 在后台异步删除文件
-        setTimeout(async () => {
-          try {
-            const res = await fetch('/api/delete-image', {
-              method: 'DELETE',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ filename: image.filename })
-            })
-            
-            if (!res.ok) {
-              console.error('Delete image failed:', await res.text())
-              // 如果删除失败，可以考虑重新添加到UI中
-            }
-          } catch (error) {
-            console.error('Error deleting image:', error)
-          }
-        }, 0)
+        try {
+          const res = await fetch('/api/delete-image', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: image.filename })
+          })
+          if (!res.ok) throw new Error(await res.text())
+          setExistingProcessedImages(prev => prev.filter(img => img.id !== id))
+        } catch (error) {
+          useUI.getState().addLog(`${image.filename}: ${error}`)
+        }
       } else {
-        // 对于新处理的图片，使用store의 removeItem
-        removeItem(id)
+        if (await removeItem(id)) setExistingProcessedImages(prev => prev.filter(img => img.filename !== image.filename))
       }
     }
   }, [allProcessedImages, removeItem])
@@ -606,9 +566,9 @@ function ParamsPanel() {
         <div className="text-sm mb-1">{t('TrainSteps')}：{trainSteps}</div>
         <input
           type="range"
-          min={500}
+          min={10}
           max={4000}
-          step={100}
+          step={10}
           value={trainSteps}
           onChange={(e) => {
             set({ trainSteps: Number(e.target.value) })
@@ -621,7 +581,7 @@ function ParamsPanel() {
           }}
           className="w-full"
           style={{
-            '--range-progress': `${((trainSteps - 500) / (4000 - 500)) * 100}%`
+            '--range-progress': `${((trainSteps - 10) / (4000 - 10)) * 100}%`
           } as React.CSSProperties}
         />
       </div>
@@ -670,7 +630,7 @@ function ParamsPanel() {
         <div className="text-sm mb-1">{t('Optimizer')}</div>
         <select
           className="w-full border rounded-xl px-3 py-2"
-          value={optimizerType || 'AdamW8bit'}
+          value={optimizerType || 'AdamW'}
           onChange={(e) => {
             const val = e.target.value;
             set({ optimizerType: val });
@@ -684,8 +644,8 @@ function ParamsPanel() {
             showSaveTip();
           }}
         >
-          <option value="AdamW8bit">{t('DefaultOptimizer')}</option>
-          <option value="DAdaptation">{t('AutoLROptimizer')}</option>
+          <option value="AdamW8bit">AdamW8bit</option>
+          <option value="DAdaptation">DAdaptation</option>
           <option value="Lion">Lion</option>
           <option value="AdamW">AdamW</option>
         </select>
@@ -746,132 +706,9 @@ function ProgressInfo() {
   const { t } = useTranslation()
   return (
     <div className="text-sm text-gray-600 mt-1 flex justify-between">
-      <span>{stepText}</span>
+      <span>{t(stepText)}</span>
       <span>{t('Time')}：{eta}</span>
     </div>
-  )
-}
-
-function StartTrainingButton() {
-  const { dataset, set, resetProgress, addLog, settings, modelName } = useUI()
-  const [loading, setLoading] = useState(false)
-  const { t } = useTranslation()
-
-  const start = async () => {
-    setLoading(true)
-    resetProgress()
-    
-    // 检查是否有已处理的图片
-    try {
-      const processedRes = await fetch('/api/processed-images')
-      const processedData = processedRes.ok ? await processedRes.json() : { images: [] }
-      const hasProcessedImages = processedData.images && processedData.images.length > 0
-      
-      if (!hasProcessedImages && !dataset.length) {
-        setLoading(false)
-        return alert(t('UploadFirstAlert'))
-      }
-      
-      if (hasProcessedImages) {
-        addLog(t('LogHasProcessed', { count: processedData.images.length }))
-      } else {
-        addLog(t('LogStartUpload'))
-        // 上传新图片
-        const form = new FormData()
-        for (const item of dataset) {
-          if (item.file) form.append('files', item.file)
-        }
-        await fetch('/api/upload', { method: 'POST', body: form })
-      }
-    } catch (error) {
-      if (!dataset.length) {
-        setLoading(false)
-        return alert(t('CheckErrorAlert'))
-      }
-      addLog(t('LogStartUpload'))
-      // 上传图片
-      const form = new FormData()
-      for (const item of dataset) {
-        if (item.file) form.append('files', item.file)
-      }
-      await fetch('/api/upload', { method: 'POST', body: form })
-    }
-
-    // 连接 WebSocket 获取实时进度（附带前端设置的参数）
-    const qs = new URLSearchParams()
-    qs.set('steps', String(useUI.getState().trainSteps))
-    {
-      const lrMin = settings?.LR_SLIDER_MIN ?? 1e-5
-      const lrMax = settings?.LR_SLIDER_MAX ?? 1e-4
-      const v = useUI.getState().learningRate
-      const mapped = lrMin + (lrMax - lrMin) * ((Math.min(10, Math.max(1, v)) - 1) / 9)
-      qs.set('lr', String(mapped))
-    }
-    if (useUI.getState().saveEverySteps > 0) qs.set('save_every', String(useUI.getState().saveEverySteps))
-    if (useUI.getState().autoResume) qs.set('auto_resume', '1')
-    
-    // 优化器与自定义LR
-    const optimizerType = useUI.getState().optimizerType;
-    if (optimizerType) qs.set('optimizer_type', optimizerType);
-    
-    const unetLr = useUI.getState().unetLr;
-    if (unetLr && unetLr > 0) qs.set('unet_lr', String(unetLr));
-    
-    const textEncoderLr = useUI.getState().textEncoderLr;
-    if (textEncoderLr && textEncoderLr > 0) qs.set('text_encoder_lr', String(textEncoderLr));
-
-    // 将模型名称透传给后端（用于默认文件名 {name}_{steps}）
-    qs.set('name', modelName || 'model')
-    const ws = new WebSocket(`ws://127.0.0.1:8000/ws/train?${qs.toString()}`)
-    ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data)
-      if (msg.type === 'log') addLog(msg.data)
-      if (msg.type === 'progress') {
-        const text = (msg.cur && msg.total) ? `${msg.cur}/${msg.total}` : `${Math.round((msg.p||0)*100)}%`
-        set({ progress: msg.p, eta: msg.elapsed ?? msg.eta ?? '--:--', stepText: text })
-      }
-      if (msg.type === 'done') {
-        addLog(`${t('Done')}: ${msg.path}`)
-        ws.close()
-        setLoading(false)
-      }
-      if (msg.type === 'error') {
-        addLog(`${t('Error')}: ${msg.error}`)
-        ws.close()
-        setLoading(false)
-      }
-    }
-    ws.onerror = () => {
-      addLog(t('WsError'))
-      setLoading(false)
-    }
-  }
-
-  const stop = async () => {
-    try {
-      await fetch('/api/stop', { method: 'POST' })
-      addLog(t('LogStopping'))
-      setLoading(false)
-    } catch (e) {
-      addLog(t('StopFailed'))
-    }
-  }
-
-  return (
-    loading ? (
-      <div className="flex gap-3">
-        <button className="btn-primary flex-1 text-center text-lg py-3" onClick={start} disabled>
-          {t('Training')}
-        </button>
-        <button className="px-4 py-3 rounded-xl bg-gray-100 hover:bg-gray-200" onClick={stop}>
-          {t('Stop')}
-        </button>
-      </div>
-    ) : (
-      <button className="btn-primary w-full text-center text-lg py-3" onClick={start}>
-        {t('StartTraining')}
-      </button>
-    )
   )
 }
 
@@ -911,6 +748,7 @@ export default function App() {
   // 周期性拉取系统信息
   useEffect(() => {
     let timer: any
+    let disposed = false
     const tick = async () => {
       try {
         const res = await fetch('/api/system-stats')
@@ -926,11 +764,11 @@ export default function App() {
       } catch (e) {
         // ignore
       } finally {
-        timer = setTimeout(tick, 3000)
+        if (!disposed) timer = setTimeout(tick, 3000)
       }
     }
     tick()
-    return () => clearTimeout(timer)
+    return () => { disposed = true; clearTimeout(timer) }
   }, [])
 
   return (
